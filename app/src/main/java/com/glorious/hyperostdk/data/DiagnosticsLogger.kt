@@ -7,6 +7,7 @@ import com.glorious.hyperostdk.model.DeviceInfo
 import com.glorious.hyperostdk.model.IntentProbeResult
 import com.glorious.hyperostdk.model.MtzInfo
 import com.glorious.hyperostdk.model.ThemeManagerInfo
+import com.glorious.hyperostdk.model.ThemeServiceProbeResult
 import java.io.File
 import java.time.LocalDateTime
 import java.time.format.DateTimeFormatter
@@ -20,7 +21,8 @@ object DiagnosticsLogger {
         deviceInfo: DeviceInfo,
         themeManagerInfo: ThemeManagerInfo,
         mtzInfo: MtzInfo?,
-        intentProbeResults: List<IntentProbeResult> = emptyList()
+        intentProbeResults: List<IntentProbeResult> = emptyList(),
+        themeServiceProbeResult: ThemeServiceProbeResult? = null
     ): File {
         val root = context.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS) ?: context.filesDir
         val directory = File(root, "diagnostics").apply { mkdirs() }
@@ -33,7 +35,8 @@ object DiagnosticsLogger {
                 deviceInfo = deviceInfo,
                 themeManagerInfo = themeManagerInfo,
                 mtzInfo = mtzInfo,
-                intentProbeResults = intentProbeResults
+                intentProbeResults = intentProbeResults,
+                themeServiceProbeResult = themeServiceProbeResult
             )
         )
         return file
@@ -44,7 +47,8 @@ object DiagnosticsLogger {
         deviceInfo: DeviceInfo,
         themeManagerInfo: ThemeManagerInfo,
         mtzInfo: MtzInfo?,
-        intentProbeResults: List<IntentProbeResult>
+        intentProbeResults: List<IntentProbeResult>,
+        themeServiceProbeResult: ThemeServiceProbeResult?
     ): String = buildString {
         appendLine("HyperOS TDK Diagnostics")
         appendLine("======================")
@@ -107,6 +111,21 @@ object DiagnosticsLogger {
                     appendLine("  -> ${match.componentName} | exported=${match.exported} | permission=${match.permission ?: "none"} | priority=${match.priority} | match=${match.match}")
                 }
             }
+        }
+        appendLine()
+
+        appendLine("[THEME SERVICE PROBE]")
+        if (themeServiceProbeResult == null) {
+            appendLine("Probe not run.")
+        } else {
+            appendLine("Component: ${themeServiceProbeResult.componentName}")
+            appendLine("Bind requested: ${themeServiceProbeResult.bindRequested}")
+            appendLine("Connected: ${themeServiceProbeResult.connected}")
+            appendLine("Interface descriptor: ${themeServiceProbeResult.interfaceDescriptor ?: "unknown"}")
+            appendLine("Binder class: ${themeServiceProbeResult.binderClass ?: "unknown"}")
+            appendLine("Binder alive: ${themeServiceProbeResult.binderAlive ?: "unknown"}")
+            appendLine("Ping binder: ${themeServiceProbeResult.pingBinder ?: "unknown"}")
+            themeServiceProbeResult.error?.let { appendLine("Error: $it") }
         }
     }
 }
