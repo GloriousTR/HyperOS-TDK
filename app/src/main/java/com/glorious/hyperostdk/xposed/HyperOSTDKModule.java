@@ -5,9 +5,10 @@ import android.content.ContentResolver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.database.ContentObserver;
 import android.net.Uri;
 import android.os.Build;
-import android.os.Process;
+import android.os.Bundle;
 import android.util.Log;
 
 import java.io.File;
@@ -29,20 +30,23 @@ import io.github.libxposed.api.XposedModule;
 /**
  * LSPosed bridge for Xiaomi Theme Manager.
  *
- * <p>v0.2.3 keeps URI staging but hardens IPC delivery. Instead of relying on a custom
- * signature-permission filter for a dynamically registered receiver, the receiver validates the
- * Android 14+ sender identity reported by BroadcastReceiver itself. No import is triggered
- * automatically.</p>
+ * <p>v0.2.4 replaces cross-app custom broadcasts with Binder-backed ContentProvider +
+ * ContentObserver IPC. HyperOS TDK publishes a one-shot command only after explicit user
+ * confirmation. Theme Manager observes that provider, consumes the command with its own UID,
+ * stages the granted content URI into private cache, and only then invokes the proven private
+ * import path.</p>
  */
 public final class HyperOSTDKModule extends XposedModule {
     private static final String TAG = "HyperOS-TDK";
     private static final String TARGET_PACKAGE = "com.android.thememanager";
-    private static final String SENDER_PACKAGE = "com.glorious.hyperostdk";
 
-    public static final String ACTION_IMPORT_MTZ =
-            "com.glorious.hyperostdk.action.IMPORT_MTZ";
-    public static final String EXTRA_DISPLAY_NAME = "mtz_display_name";
-    public static final String EXTRA_REQUEST_ID = "request_id";
+    private static final String CONTROL_AUTHORITY = "com.glorious.hyperostdk.control";
+    private static final Uri CONTROL_URI = Uri.parse("content://" + CONTROL_AUTHORITY + "/command");
+    private static final String METHOD_CONSUME = "consume";
+    private static final String KEY_PRESENT = "present";
+    private static final String KEY_REQUEST_ID = "request_id";
+    private static final String KEY_DISPLAY_NAME = "display_name";
+    private static final String KEY_URI = "uri";
 
     private static final String ACTION_IMPORT_START = "action_resource_import_start";
     private static final String ACTION_IMPORT_UPDATE = "action_resource_import_udpate";
@@ -71,6 +75,7 @@ public final class HyperOSTDKModule extends XposedModule {
     private volatile ClassLoader themeManagerClassLoader;
     private volatile String activeRequestId;
     private volatile File activeStagedFile;
+    private volatile ContentObserver controlObserver;
 
     @Override
     public void onModuleLoaded(ModuleLoadedParam param) {
@@ -105,7 +110,7 @@ public final class HyperOSTDKModule extends XposedModule {
                         log(Log.ERROR, TAG, "ThemeApplication.onCreate thisObject is not a Context");
                     }
                 } catch (Throwable error) {
-                    log(Log.ERROR, TAG, "Failed to register controlled import bridge after ThemeApplication.onCreate", error);
+                    log(Log.ERROR, TAG, "Failed to register provider IPC bridge after ThemeApplication.onCreate", error);
                 }
                 return result;
             });
@@ -126,56 +131,14 @@ public final class HyperOSTDKModule extends XposedModule {
         }
         final Context appContext = context;
 
-        BroadcastReceiver controlReceiver = new BroadcastReceiver() {
+        controlObserver = new ContentObserver(null) {
             @Override
-            public void onReceive(Context receiverContext, Intent intent) {
-                if (!ACTION_IMPORT_MTZ.equals(intent.getAction())) {
-                    return;
-                }
-
-                String requestId = intent.getStringExtra(EXTRA_REQUEST_ID);
-                String safeRequestId = requestId == null || requestId.isBlank() ? "unknown" : requestId;
-
-                if (Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
-                    log(Log.ERROR, TAG, "CONTROLLED IMPORT IPC rejected: sender identity API unavailable; request="
-                            + safeRequestId);
-                    return;
-                }
-
-                String sentFromPackage = getSentFromPackage();
-                int sentFromUid = getSentFromUid();
-                boolean trusted = SENDER_PACKAGE.equals(sentFromPackage)
-                        || uidOwnsPackage(receiverContext, sentFromUid, SENDER_PACKAGE);
-
-                log(Log.INFO, TAG, "CONTROLLED IMPORT IPC received: request=" + safeRequestId
-                        + " senderPackage=" + sentFromPackage + " senderUid=" + sentFromUid
-                        + " trusted=" + trusted);
-
-                if (!trusted || sentFromUid == Process.INVALID_UID) {
-                    log(Log.ERROR, TAG, "CONTROLLED IMPORT IPC rejected: untrusted sender; request="
-                            + safeRequestId);
-                    return;
-                }
-
-                String displayName = intent.getStringExtra(EXTRA_DISPLAY_NAME);
-                Uri uri = intent.getData();
-                PendingResult pendingResult = goAsync();
-                importExecutor.execute(() -> {
-                    try {
-                        handleControlledImport(appContext, safeRequestId, displayName, uri);
-                    } finally {
-                        pendingResult.finish();
-                    }
-                });
+            public void onChange(boolean selfChange, Uri uri) {
+                log(Log.INFO, TAG, "CONTROLLED IMPORT provider change observed: uri=" + uri);
+                importExecutor.execute(() -> consumeProviderCommand(appContext));
             }
         };
-
-        IntentFilter controlFilter = new IntentFilter(ACTION_IMPORT_MTZ);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            appContext.registerReceiver(controlReceiver, controlFilter, Context.RECEIVER_EXPORTED);
-        } else {
-            appContext.registerReceiver(controlReceiver, controlFilter);
-        }
+        appContext.getContentResolver().registerContentObserver(CONTROL_URI, false, controlObserver);
 
         BroadcastReceiver resultMonitor = new BroadcastReceiver() {
             @Override
@@ -204,23 +167,34 @@ public final class HyperOSTDKModule extends XposedModule {
             appContext.registerReceiver(resultMonitor, resultFilter);
         }
 
-        log(Log.INFO, TAG, "CONTROLLED IMPORT BRIDGE READY: sender-verified URI receiver registered in Theme Manager process.");
+        log(Log.INFO, TAG,
+                "CONTROLLED IMPORT BRIDGE READY: provider ContentObserver registered in Theme Manager process.");
     }
 
-    private boolean uidOwnsPackage(Context context, int uid, String packageName) {
-        if (uid == Process.INVALID_UID) {
-            return false;
-        }
-        String[] packages = context.getPackageManager().getPackagesForUid(uid);
-        if (packages == null) {
-            return false;
-        }
-        for (String candidate : packages) {
-            if (packageName.equals(candidate)) {
-                return true;
+    private void consumeProviderCommand(Context context) {
+        try {
+            Bundle command = context.getContentResolver().call(
+                    CONTROL_AUTHORITY,
+                    METHOD_CONSUME,
+                    null,
+                    null
+            );
+            if (command == null || !command.getBoolean(KEY_PRESENT, false)) {
+                log(Log.WARN, TAG, "CONTROLLED IMPORT provider notification had no live command.");
+                return;
             }
+
+            String requestId = command.getString(KEY_REQUEST_ID);
+            String displayName = command.getString(KEY_DISPLAY_NAME);
+            String uriText = command.getString(KEY_URI);
+            Uri uri = uriText == null ? null : Uri.parse(uriText);
+
+            log(Log.INFO, TAG, "CONTROLLED IMPORT PROVIDER IPC consumed: request=" + requestId
+                    + " displayName=" + displayName + " uri=" + uri);
+            handleControlledImport(context, requestId, displayName, uri);
+        } catch (Throwable error) {
+            log(Log.ERROR, TAG, "CONTROLLED IMPORT provider IPC consume failed", error);
         }
-        return false;
     }
 
     private void handleControlledImport(Context context, String requestId, String displayName, Uri uri) {
@@ -424,7 +398,7 @@ public final class HyperOSTDKModule extends XposedModule {
             );
             assertReturnType(importMethod, void.class,
                     THEME_IMPORT_MANAGER + ".v(ResourceContext, Resource)");
-            log(Log.INFO, TAG, "[OK] Import method is present and remains idle until a sender-verified user request: "
+            log(Log.INFO, TAG, "[OK] Import method is present and remains idle until a provider IPC user request: "
                     + importMethod);
 
             Method localImportCaller = requireMethod(localCustomizeTaskClass, "e", Void[].class);
