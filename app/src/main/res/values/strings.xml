@@ -1,4 +1,4 @@
 <resources>
     <string name="app_name">HyperOS TDK</string>
-    <string name="xposed_description">HyperOS 3 Theme Manager yerel MTZ import araştırma ve LSPosed doğrulama modülü.</string>
+    <string name="xposed_description">HyperOS 3 Theme Manager için kullanıcı onaylı yerel MTZ import ve tanılama LSPosed modülü.</string>
 </resources>
