@@ -1,6 +1,7 @@
 package com.glorious.hyperostdk
 
 import android.content.ContentResolver
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
@@ -111,7 +112,7 @@ private fun ControlledImportScreen(
         val displayName = queryDisplayName(context.contentResolver, uri)
             ?: uri.lastPathSegment
             ?: "seçili dosya"
-        val rawPath = resolveSharedStoragePath(uri)
+        val rawPath = resolveSharedStoragePath(context, uri)
 
         when {
             !displayName.endsWith(".mtz", ignoreCase = true) -> {
@@ -262,13 +263,13 @@ private fun ControlledImportScreen(
     }
 }
 
-private fun resolveSharedStoragePath(uri: Uri): String? {
+private fun resolveSharedStoragePath(context: Context, uri: Uri): String? {
     if (uri.scheme == ContentResolver.SCHEME_FILE) {
         return uri.path
     }
 
     return runCatching {
-        if (!DocumentsContract.isDocumentUri(null, uri)) {
+        if (!DocumentsContract.isDocumentUri(context, uri)) {
             return@runCatching null
         }
         val documentId = DocumentsContract.getDocumentId(uri)
