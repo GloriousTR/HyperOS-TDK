@@ -41,9 +41,11 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
 import com.glorious.hyperostdk.data.DeviceInfoProvider
 import com.glorious.hyperostdk.data.DiagnosticsLogger
+import com.glorious.hyperostdk.data.IntentProbe
 import com.glorious.hyperostdk.data.MtzInspector
 import com.glorious.hyperostdk.data.ThemeManagerInspector
 import com.glorious.hyperostdk.model.DeviceInfo
+import com.glorious.hyperostdk.model.IntentProbeResult
 import com.glorious.hyperostdk.model.MtzInfo
 import com.glorious.hyperostdk.model.ThemeManagerInfo
 import com.glorious.hyperostdk.ui.theme.HyperOSTDKTheme
@@ -85,8 +87,9 @@ private fun DiagnosticsScreen(onShareReport: (File) -> Unit) {
     val deviceInfo = remember { DeviceInfoProvider.read() }
     var themeManagerInfo by remember { mutableStateOf<ThemeManagerInfo?>(null) }
     var mtzInfo by remember { mutableStateOf<MtzInfo?>(null) }
+    var probeResults by remember { mutableStateOf<List<IntentProbeResult>>(emptyList()) }
     var isBusy by remember { mutableStateOf(false) }
-    var status by remember { mutableStateOf("Foundation hazır. Theme Manager taramasıyla başlayabilirsiniz.") }
+    var status by remember { mutableStateOf("v0.1.1 hazır. Theme Manager ve MTZ taramasından sonra Import Probe çalıştırabilirsiniz.") }
 
     val mtzPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
         if (uri == null) return@rememberLauncherForActivityResult
@@ -100,7 +103,8 @@ private fun DiagnosticsScreen(onShareReport: (File) -> Unit) {
                 withContext(Dispatchers.IO) { MtzInspector.inspect(context.contentResolver, uri) }
             }.onSuccess {
                 mtzInfo = it
-                status = "MTZ incelendi: ${it.displayName}"
+                probeResults = emptyList()
+                status = "MTZ incelendi: ${it.displayName}. Import Probe çalıştırılabilir."
             }.onFailure {
                 status = "MTZ inceleme hatası: ${it.message}"
             }
@@ -108,7 +112,7 @@ private fun DiagnosticsScreen(onShareReport: (File) -> Unit) {
         }
     }
 
-    Scaffold(topBar = { TopAppBar(title = { Text("HyperOS TDK • v0.1.0") }) }) { innerPadding ->
+    Scaffold(topBar = { TopAppBar(title = { Text("HyperOS TDK • v0.1.1") }) }) { innerPadding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().padding(innerPadding),
             contentPadding = PaddingValues(16.dp),
@@ -144,6 +148,40 @@ private fun DiagnosticsScreen(onShareReport: (File) -> Unit) {
                 }
             }
             item {
+                InfoCard("Import Probe") {
+                    Text(
+                        "Bu tarama temayı açmaz veya uygulamaz. Seçili MTZ URI'si için Theme Manager'ın hangi VIEW/SEND intent'lerini kabul ettiğini PackageManager üzerinden ölçer.",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    Button(
+                        enabled = !isBusy && mtzInfo != null,
+                        onClick = {
+                            val selectedMtz = mtzInfo ?: return@Button
+                            scope.launch {
+                                isBusy = true
+                                status = "MTZ intent adayları taranıyor…"
+                                runCatching {
+                                    withContext(Dispatchers.IO) { IntentProbe.probe(context, selectedMtz) }
+                                }.onSuccess { results ->
+                                    probeResults = results
+                                    val matchCount = results.sumOf { it.matches.size }
+                                    status = "Import Probe tamamlandı: ${results.size} aday, $matchCount eşleşme."
+                                }.onFailure {
+                                    status = "Import Probe hatası: ${it.message}"
+                                }
+                                isBusy = false
+                            }
+                        }
+                    ) { Text("MTZ Intent Probe") }
+
+                    if (probeResults.isNotEmpty()) {
+                        Spacer(Modifier.height(12.dp))
+                        IntentProbeContent(probeResults)
+                    }
+                }
+            }
+            item {
                 InfoCard("Tanılama") {
                     Text(status, style = MaterialTheme.typography.bodyMedium)
                     if (isBusy) {
@@ -159,7 +197,13 @@ private fun DiagnosticsScreen(onShareReport: (File) -> Unit) {
                             }.also { themeManagerInfo = it }
                             runCatching {
                                 withContext(Dispatchers.IO) {
-                                    DiagnosticsLogger.writeReport(context, deviceInfo, managerInfo, mtzInfo)
+                                    DiagnosticsLogger.writeReport(
+                                        context = context,
+                                        deviceInfo = deviceInfo,
+                                        themeManagerInfo = managerInfo,
+                                        mtzInfo = mtzInfo,
+                                        intentProbeResults = probeResults
+                                    )
                                 }
                             }.onSuccess {
                                 status = "Tanılama raporu oluşturuldu: ${it.name}"
@@ -185,6 +229,25 @@ private fun DiagnosticsScreen(onShareReport: (File) -> Unit) {
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun IntentProbeContent(results: List<IntentProbeResult>) {
+    results.forEach { result ->
+        Text(result.label, style = MaterialTheme.typography.labelLarge)
+        if (result.matches.isEmpty()) {
+            Text("Eşleşme yok", style = MaterialTheme.typography.bodySmall)
+        } else {
+            result.matches.forEach { match ->
+                Text(
+                    "→ ${match.componentName}\nexported=${match.exported} • permission=${match.permission ?: "none"}",
+                    style = MaterialTheme.typography.bodySmall,
+                    fontFamily = FontFamily.Monospace
+                )
+            }
+        }
+        Spacer(Modifier.height(8.dp))
     }
 }
 
