@@ -1,19 +1,26 @@
 package com.glorious.hyperostdk.xposed;
 
 import android.content.BroadcastReceiver;
+import android.content.ContentResolver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.net.Uri;
 import android.os.Build;
 import android.util.Log;
 
 import java.io.File;
 import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.InputStream;
+import java.io.OutputStream;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Modifier;
 import java.util.Locale;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import io.github.libxposed.api.XposedModule;
@@ -21,10 +28,10 @@ import io.github.libxposed.api.XposedModule;
 /**
  * LSPosed bridge for Xiaomi Theme Manager.
  *
- * <p>v0.2.1 keeps the read-only readiness probe, then registers a protected one-shot control
- * receiver inside the Theme Manager process. The receiver accepts only requests sent by the
- * HyperOS TDK app's signature-protected permission and only imports readable shared-storage MTZ
- * ZIP files. No import is triggered automatically.</p>
+ * <p>v0.2.2 keeps the proven private import path but replaces direct shared-storage path access
+ * with Android URI permission handoff. The Theme Manager process copies the explicitly selected
+ * content URI into its own private cache, validates the staged MTZ, and only then invokes the
+ * internal ThemeImportManager. No import is triggered automatically.</p>
  */
 public final class HyperOSTDKModule extends XposedModule {
     private static final String TAG = "HyperOS-TDK";
@@ -34,7 +41,7 @@ public final class HyperOSTDKModule extends XposedModule {
             "com.glorious.hyperostdk.action.IMPORT_MTZ";
     public static final String CONTROL_PERMISSION =
             "com.glorious.hyperostdk.permission.IMPORT_CONTROL";
-    public static final String EXTRA_PATH = "mtz_path";
+    public static final String EXTRA_DISPLAY_NAME = "mtz_display_name";
     public static final String EXTRA_REQUEST_ID = "request_id";
 
     private static final String ACTION_IMPORT_START = "action_resource_import_start";
@@ -60,8 +67,10 @@ public final class HyperOSTDKModule extends XposedModule {
     private static final long MAX_MTZ_BYTES = 512L * 1024L * 1024L;
 
     private final AtomicBoolean controlBridgeRegistered = new AtomicBoolean(false);
+    private final ExecutorService importExecutor = Executors.newSingleThreadExecutor();
     private volatile ClassLoader themeManagerClassLoader;
     private volatile String activeRequestId;
+    private volatile File activeStagedFile;
 
     @Override
     public void onModuleLoaded(ModuleLoadedParam param) {
@@ -115,6 +124,7 @@ public final class HyperOSTDKModule extends XposedModule {
         if (context == null) {
             context = applicationContextSource;
         }
+        final Context appContext = context;
 
         BroadcastReceiver controlReceiver = new BroadcastReceiver() {
             @Override
@@ -123,14 +133,22 @@ public final class HyperOSTDKModule extends XposedModule {
                     return;
                 }
                 String requestId = intent.getStringExtra(EXTRA_REQUEST_ID);
-                String path = intent.getStringExtra(EXTRA_PATH);
-                handleControlledImport(receiverContext, requestId, path);
+                String displayName = intent.getStringExtra(EXTRA_DISPLAY_NAME);
+                Uri uri = intent.getData();
+                PendingResult pendingResult = goAsync();
+                importExecutor.execute(() -> {
+                    try {
+                        handleControlledImport(appContext, requestId, displayName, uri);
+                    } finally {
+                        pendingResult.finish();
+                    }
+                });
             }
         };
 
         IntentFilter controlFilter = new IntentFilter(ACTION_IMPORT_MTZ);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            context.registerReceiver(
+            appContext.registerReceiver(
                     controlReceiver,
                     controlFilter,
                     CONTROL_PERMISSION,
@@ -138,7 +156,7 @@ public final class HyperOSTDKModule extends XposedModule {
                     Context.RECEIVER_EXPORTED
             );
         } else {
-            context.registerReceiver(controlReceiver, controlFilter, CONTROL_PERMISSION, null);
+            appContext.registerReceiver(controlReceiver, controlFilter, CONTROL_PERMISSION, null);
         }
 
         BroadcastReceiver resultMonitor = new BroadcastReceiver() {
@@ -152,6 +170,7 @@ public final class HyperOSTDKModule extends XposedModule {
                 log(Log.INFO, TAG, "[IMPORT EVENT] request=" + request + " action=" + action);
                 if (ACTION_IMPORT_COMPLETE.equals(action) || ACTION_IMPORT_FAIL.equals(action)) {
                     activeRequestId = null;
+                    cleanupActiveStagedFile();
                 }
             }
         };
@@ -162,21 +181,30 @@ public final class HyperOSTDKModule extends XposedModule {
         resultFilter.addAction(ACTION_IMPORT_COMPLETE);
         resultFilter.addAction(ACTION_IMPORT_FAIL);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            context.registerReceiver(resultMonitor, resultFilter, Context.RECEIVER_NOT_EXPORTED);
+            appContext.registerReceiver(resultMonitor, resultFilter, Context.RECEIVER_NOT_EXPORTED);
         } else {
-            context.registerReceiver(resultMonitor, resultFilter);
+            appContext.registerReceiver(resultMonitor, resultFilter);
         }
 
-        log(Log.INFO, TAG, "CONTROLLED IMPORT BRIDGE READY: protected receiver registered in Theme Manager process.");
+        log(Log.INFO, TAG, "CONTROLLED IMPORT BRIDGE READY: protected URI receiver registered in Theme Manager process.");
     }
 
-    private void handleControlledImport(Context context, String requestId, String rawPath) {
+    private void handleControlledImport(Context context, String requestId, String displayName, Uri uri) {
         String safeRequestId = requestId == null || requestId.isBlank() ? "unknown" : requestId;
         try {
-            File mtz = validateMtz(rawPath);
+            if (activeRequestId != null) {
+                throw new IllegalStateException("Another import request is still active: " + activeRequestId);
+            }
+            validateRequestMetadata(displayName, uri);
             activeRequestId = safeRequestId;
+
+            File mtz = stageMtzIntoThemeManagerCache(context, safeRequestId, uri);
+            activeStagedFile = mtz;
+            validateStagedMtz(mtz);
+
             log(Log.INFO, TAG, "CONTROLLED IMPORT REQUEST accepted: request=" + safeRequestId
-                    + " file=" + mtz.getName() + " size=" + mtz.length());
+                    + " source=" + uri + " staged=" + mtz.getAbsolutePath()
+                    + " size=" + mtz.length());
 
             ClassLoader classLoader = themeManagerClassLoader;
             if (classLoader == null) {
@@ -215,47 +243,105 @@ public final class HyperOSTDKModule extends XposedModule {
             log(Log.INFO, TAG, "CONTROLLED IMPORT queued successfully: request=" + safeRequestId
                     + ". Waiting for Theme Manager import event broadcasts.");
         } catch (Throwable error) {
-            activeRequestId = null;
+            if (safeRequestId.equals(activeRequestId)) {
+                activeRequestId = null;
+            }
+            cleanupActiveStagedFile();
             Throwable cause = error instanceof InvocationTargetException && error.getCause() != null
                     ? error.getCause()
                     : error;
             log(Log.ERROR, TAG, "CONTROLLED IMPORT failed before/while queueing: request="
-                    + safeRequestId + " path=" + rawPath, cause);
+                    + safeRequestId + " uri=" + uri, cause);
         }
     }
 
-    private File validateMtz(String rawPath) throws Exception {
-        if (rawPath == null || rawPath.isBlank()) {
-            throw new IllegalArgumentException("MTZ path is empty");
+    private void validateRequestMetadata(String displayName, Uri uri) {
+        if (displayName == null || displayName.isBlank()) {
+            throw new IllegalArgumentException("MTZ display name is empty");
+        }
+        if (!displayName.toLowerCase(Locale.ROOT).endsWith(".mtz")) {
+            throw new IllegalArgumentException("Selected file does not end with .mtz: " + displayName);
+        }
+        if (uri == null) {
+            throw new IllegalArgumentException("MTZ content URI is missing");
+        }
+        if (!ContentResolver.SCHEME_CONTENT.equals(uri.getScheme())) {
+            throw new SecurityException("Only content:// MTZ URIs are accepted");
+        }
+    }
+
+    private File stageMtzIntoThemeManagerCache(Context context, String requestId, Uri uri)
+            throws Exception {
+        File root = new File(context.getCacheDir(), "hyperos-tdk-import");
+        if (!root.isDirectory() && !root.mkdirs()) {
+            throw new IllegalStateException("Unable to create Theme Manager staging directory: " + root);
         }
 
-        File file = new File(rawPath).getCanonicalFile();
-        String canonical = file.getPath();
-        if (!canonical.startsWith("/storage/emulated/0/")) {
-            throw new SecurityException("Only shared storage paths under /storage/emulated/0 are accepted");
+        String safeFileName = requestId.replaceAll("[^A-Za-z0-9._-]", "_") + ".mtz";
+        File outputFile = new File(root, safeFileName).getCanonicalFile();
+        if (!outputFile.getParentFile().equals(root.getCanonicalFile())) {
+            throw new SecurityException("Invalid staging target");
         }
-        if (!canonical.toLowerCase(Locale.ROOT).endsWith(".mtz")) {
-            throw new IllegalArgumentException("Selected file does not end with .mtz");
+
+        long total = 0L;
+        try (InputStream input = context.getContentResolver().openInputStream(uri);
+             OutputStream output = new FileOutputStream(outputFile, false)) {
+            if (input == null) {
+                throw new SecurityException("Theme Manager ContentResolver could not open granted MTZ URI");
+            }
+            byte[] buffer = new byte[64 * 1024];
+            int read;
+            while ((read = input.read(buffer)) != -1) {
+                total += read;
+                if (total > MAX_MTZ_BYTES) {
+                    throw new IllegalArgumentException("MTZ exceeds maximum allowed size: " + total);
+                }
+                output.write(buffer, 0, read);
+            }
+            output.flush();
+        } catch (Throwable error) {
+            if (outputFile.exists()) {
+                //noinspection ResultOfMethodCallIgnored
+                outputFile.delete();
+            }
+            throw error;
         }
-        if (!file.exists() || !file.isFile()) {
-            throw new IllegalArgumentException("MTZ file does not exist: " + canonical);
+
+        if (total < 4L) {
+            //noinspection ResultOfMethodCallIgnored
+            outputFile.delete();
+            throw new IllegalArgumentException("MTZ is too small: " + total);
         }
-        if (!file.canRead()) {
-            throw new SecurityException("Theme Manager process cannot read MTZ path: " + canonical);
+
+        log(Log.INFO, TAG, "CONTROLLED IMPORT URI staged in Theme Manager cache: request="
+                + requestId + " bytes=" + total + " file=" + outputFile.getAbsolutePath());
+        return outputFile;
+    }
+
+    private void validateStagedMtz(File file) throws Exception {
+        if (!file.exists() || !file.isFile() || !file.canRead()) {
+            throw new SecurityException("Staged MTZ is not readable by Theme Manager: " + file);
         }
         if (file.length() < 4L || file.length() > MAX_MTZ_BYTES) {
-            throw new IllegalArgumentException("MTZ size is outside allowed range: " + file.length());
+            throw new IllegalArgumentException("Staged MTZ size is outside allowed range: " + file.length());
         }
-
         try (FileInputStream input = new FileInputStream(file)) {
             int first = input.read();
             int second = input.read();
             if (first != 'P' || second != 'K') {
-                throw new IllegalArgumentException("MTZ is not a ZIP container (missing PK signature)");
+                throw new IllegalArgumentException("Staged MTZ is not a ZIP container (missing PK signature)");
             }
         }
+    }
 
-        return file;
+    private void cleanupActiveStagedFile() {
+        File file = activeStagedFile;
+        activeStagedFile = null;
+        if (file != null && file.exists()) {
+            boolean deleted = file.delete();
+            log(Log.INFO, TAG, "CONTROLLED IMPORT staged file cleanup: deleted=" + deleted
+                    + " file=" + file.getAbsolutePath());
+        }
     }
 
     private void runReadOnlyProbe(ClassLoader classLoader) {
