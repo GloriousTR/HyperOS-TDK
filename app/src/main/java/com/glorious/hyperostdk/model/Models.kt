@@ -83,3 +83,24 @@ data class ThemeInterfaceReflectionResult(
     val transactionNames: List<ThemeTransactionInfo>,
     val errors: List<String>
 )
+
+data class FrameworkArtifactInfo(
+    val path: String,
+    val exists: Boolean,
+    val readable: Boolean,
+    val sizeBytes: Long?,
+    val containsInterface: Boolean?,
+    val containsStub: Boolean?,
+    val sha256: String?,
+    val scanError: String? = null
+)
+
+data class FrameworkArtifactExportResult(
+    val descriptor: String,
+    val artifacts: List<FrameworkArtifactInfo>,
+    val archivePath: String?,
+    val archiveName: String?,
+    val archiveSizeBytes: Long?,
+    val exportedFiles: List<String>,
+    val error: String? = null
+)

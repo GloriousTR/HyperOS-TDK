@@ -41,12 +41,14 @@ import androidx.compose.ui.unit.dp
 import androidx.core.content.FileProvider
 import com.glorious.hyperostdk.data.DeviceInfoProvider
 import com.glorious.hyperostdk.data.DiagnosticsLogger
+import com.glorious.hyperostdk.data.FrameworkArtifactExporter
 import com.glorious.hyperostdk.data.IntentProbe
 import com.glorious.hyperostdk.data.MtzInspector
 import com.glorious.hyperostdk.data.ThemeInterfaceReflectionProbe
 import com.glorious.hyperostdk.data.ThemeManagerInspector
 import com.glorious.hyperostdk.data.ThemeServiceProbe
 import com.glorious.hyperostdk.model.DeviceInfo
+import com.glorious.hyperostdk.model.FrameworkArtifactExportResult
 import com.glorious.hyperostdk.model.IntentProbeResult
 import com.glorious.hyperostdk.model.MtzInfo
 import com.glorious.hyperostdk.model.ThemeInterfaceReflectionResult
@@ -63,29 +65,35 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         setContent {
             HyperOSTDKTheme {
-                DiagnosticsScreen(onShareReport = ::shareReport)
+                DiagnosticsScreen(
+                    onShareReport = { shareFile(it, "text/plain", "Tanılama raporunu paylaş") },
+                    onShareArchive = { shareFile(it, "application/zip", "Framework paketini paylaş") }
+                )
             }
         }
     }
 
-    private fun shareReport(file: File) {
+    private fun shareFile(file: File, mimeType: String, chooserTitle: String) {
         val uri = FileProvider.getUriForFile(
             this,
             "${BuildConfig.APPLICATION_ID}.fileprovider",
             file
         )
         val intent = Intent(Intent.ACTION_SEND).apply {
-            type = "text/plain"
+            type = mimeType
             putExtra(Intent.EXTRA_STREAM, uri)
             addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
-        startActivity(Intent.createChooser(intent, "Tanılama raporunu paylaş"))
+        startActivity(Intent.createChooser(intent, chooserTitle))
     }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun DiagnosticsScreen(onShareReport: (File) -> Unit) {
+private fun DiagnosticsScreen(
+    onShareReport: (File) -> Unit,
+    onShareArchive: (File) -> Unit
+) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val scope = rememberCoroutineScope()
     val deviceInfo = remember { DeviceInfoProvider.read() }
@@ -94,9 +102,10 @@ private fun DiagnosticsScreen(onShareReport: (File) -> Unit) {
     var probeResults by remember { mutableStateOf<List<IntentProbeResult>>(emptyList()) }
     var themeServiceProbeResult by remember { mutableStateOf<ThemeServiceProbeResult?>(null) }
     var themeInterfaceReflectionResult by remember { mutableStateOf<ThemeInterfaceReflectionResult?>(null) }
+    var frameworkArtifactExportResult by remember { mutableStateOf<FrameworkArtifactExportResult?>(null) }
     var isBusy by remember { mutableStateOf(false) }
     var status by remember {
-        mutableStateOf("v0.1.3 hazır. ThemeService bağlantısından sonra IThemeService Reflection Probe çalıştırabilirsiniz.")
+        mutableStateOf("v0.1.4 hazır. IThemeService sınıfını taşıyan MIUI framework artifact'ini bulup dışa aktarabilirsiniz.")
     }
 
     val mtzPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
@@ -120,7 +129,7 @@ private fun DiagnosticsScreen(onShareReport: (File) -> Unit) {
         }
     }
 
-    Scaffold(topBar = { TopAppBar(title = { Text("HyperOS TDK • v0.1.3") }) }) { innerPadding ->
+    Scaffold(topBar = { TopAppBar(title = { Text("HyperOS TDK • v0.1.4") }) }) { innerPadding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().padding(innerPadding),
             contentPadding = PaddingValues(16.dp),
@@ -141,6 +150,7 @@ private fun DiagnosticsScreen(onShareReport: (File) -> Unit) {
                                 themeManagerInfo = it
                                 themeServiceProbeResult = null
                                 themeInterfaceReflectionResult = null
+                                frameworkArtifactExportResult = null
                                 status = if (it.installed) {
                                     "Theme Manager bulundu: ${it.packageName}"
                                 } else {
@@ -214,6 +224,7 @@ private fun DiagnosticsScreen(onShareReport: (File) -> Unit) {
                                     .onSuccess { result ->
                                         themeServiceProbeResult = result
                                         themeInterfaceReflectionResult = null
+                                        frameworkArtifactExportResult = null
                                         status = if (result.connected) {
                                             "ThemeService bağlantısı başarılı: ${result.interfaceDescriptor ?: "descriptor alınamadı"}"
                                         } else {
@@ -268,6 +279,57 @@ private fun DiagnosticsScreen(onShareReport: (File) -> Unit) {
                 }
             }
             item {
+                InfoCard("MIUI Framework Artifact") {
+                    Text(
+                        "Cihazın sistem bölümündeki MIUI framework APK/JAR adaylarını salt-okuma olarak tarar. IThemeService sınıfını taşıyan artifact'i ve Theme Manager APK'sını, değişiklik yapmadan paylaşılabilir bir ZIP içine kopyalar.",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    Button(
+                        enabled = !isBusy &&
+                            themeServiceProbeResult?.connected == true &&
+                            !themeServiceProbeResult?.interfaceDescriptor.isNullOrBlank(),
+                        onClick = {
+                            val descriptor = themeServiceProbeResult?.interfaceDescriptor ?: return@Button
+                            scope.launch {
+                                isBusy = true
+                                status = "MIUI framework artifact'leri taranıyor ve paket hazırlanıyor…"
+                                runCatching {
+                                    withContext(Dispatchers.IO) {
+                                        FrameworkArtifactExporter.probeAndExport(context, descriptor)
+                                    }
+                                }.onSuccess { result ->
+                                    frameworkArtifactExportResult = result
+                                    val matches = result.artifacts.count {
+                                        it.containsInterface == true || it.containsStub == true
+                                    }
+                                    status = if (result.archivePath != null) {
+                                        "Framework artifact taraması tamamlandı: $matches sınıf eşleşmesi, ${result.exportedFiles.size} dosya ZIP'e eklendi."
+                                    } else {
+                                        "Framework artifact taraması tamamlandı fakat ZIP oluşturulamadı: ${result.error ?: "bilinmeyen neden"}"
+                                    }
+                                }.onFailure {
+                                    status = "Framework artifact tarama hatası: ${it.message}"
+                                }
+                                isBusy = false
+                            }
+                        }
+                    ) { Text("Framework Artifact Bul ve Paketle") }
+
+                    val archivePath = frameworkArtifactExportResult?.archivePath
+                    if (!archivePath.isNullOrBlank()) {
+                        Spacer(Modifier.height(8.dp))
+                        OutlinedButton(
+                            enabled = !isBusy,
+                            onClick = { onShareArchive(File(archivePath)) }
+                        ) { Text("Artifact ZIP'ini Paylaş") }
+                    }
+
+                    Spacer(Modifier.height(12.dp))
+                    FrameworkArtifactContent(frameworkArtifactExportResult)
+                }
+            }
+            item {
                 InfoCard("Tanılama") {
                     Text(status, style = MaterialTheme.typography.bodyMedium)
                     if (isBusy) {
@@ -290,7 +352,8 @@ private fun DiagnosticsScreen(onShareReport: (File) -> Unit) {
                                         mtzInfo = mtzInfo,
                                         intentProbeResults = probeResults,
                                         themeServiceProbeResult = themeServiceProbeResult,
-                                        themeInterfaceReflectionResult = themeInterfaceReflectionResult
+                                        themeInterfaceReflectionResult = themeInterfaceReflectionResult,
+                                        frameworkArtifactExportResult = frameworkArtifactExportResult
                                     )
                                 }
                             }.onSuccess {
@@ -423,6 +486,45 @@ private fun ThemeInterfaceReflectionContent(result: ThemeInterfaceReflectionResu
         result.errors.forEach {
             Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
         }
+    }
+}
+
+@Composable
+private fun FrameworkArtifactContent(result: FrameworkArtifactExportResult?) {
+    if (result == null) {
+        Text("Henüz çalıştırılmadı.", style = MaterialTheme.typography.bodySmall)
+        return
+    }
+
+    KeyValue("Kontrol edilen", result.artifacts.size.toString())
+    KeyValue(
+        "Sınıf eşleşmesi",
+        result.artifacts.count { it.containsInterface == true || it.containsStub == true }.toString()
+    )
+    KeyValue("ZIP dosyası", result.archiveName ?: "oluşturulamadı")
+    KeyValue("ZIP boyutu", formatBytes(result.archiveSizeBytes))
+    KeyValue("Dışa aktarılan", result.exportedFiles.size.toString())
+
+    result.artifacts
+        .filter { it.exists || it.containsInterface == true || it.scanError != null }
+        .forEach { artifact ->
+            Spacer(Modifier.height(6.dp))
+            Text(artifact.path, style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace)
+            Text(
+                "readable=${artifact.readable} • interface=${artifact.containsInterface ?: "?"} • stub=${artifact.containsStub ?: "?"}",
+                style = MaterialTheme.typography.bodySmall
+            )
+            artifact.sha256?.let {
+                Text("SHA-256: $it", style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace)
+            }
+            artifact.scanError?.let {
+                Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+            }
+        }
+
+    result.error?.let {
+        Spacer(Modifier.height(8.dp))
+        Text(it, color = MaterialTheme.colorScheme.error)
     }
 }
 

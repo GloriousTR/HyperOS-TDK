@@ -4,6 +4,7 @@ import android.content.Context
 import android.os.Environment
 import com.glorious.hyperostdk.BuildConfig
 import com.glorious.hyperostdk.model.DeviceInfo
+import com.glorious.hyperostdk.model.FrameworkArtifactExportResult
 import com.glorious.hyperostdk.model.IntentProbeResult
 import com.glorious.hyperostdk.model.MtzInfo
 import com.glorious.hyperostdk.model.ThemeInterfaceReflectionResult
@@ -24,7 +25,8 @@ object DiagnosticsLogger {
         mtzInfo: MtzInfo?,
         intentProbeResults: List<IntentProbeResult> = emptyList(),
         themeServiceProbeResult: ThemeServiceProbeResult? = null,
-        themeInterfaceReflectionResult: ThemeInterfaceReflectionResult? = null
+        themeInterfaceReflectionResult: ThemeInterfaceReflectionResult? = null,
+        frameworkArtifactExportResult: FrameworkArtifactExportResult? = null
     ): File {
         val root = context.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS) ?: context.filesDir
         val directory = File(root, "diagnostics").apply { mkdirs() }
@@ -39,7 +41,8 @@ object DiagnosticsLogger {
                 mtzInfo = mtzInfo,
                 intentProbeResults = intentProbeResults,
                 themeServiceProbeResult = themeServiceProbeResult,
-                themeInterfaceReflectionResult = themeInterfaceReflectionResult
+                themeInterfaceReflectionResult = themeInterfaceReflectionResult,
+                frameworkArtifactExportResult = frameworkArtifactExportResult
             )
         )
         return file
@@ -52,7 +55,8 @@ object DiagnosticsLogger {
         mtzInfo: MtzInfo?,
         intentProbeResults: List<IntentProbeResult>,
         themeServiceProbeResult: ThemeServiceProbeResult?,
-        themeInterfaceReflectionResult: ThemeInterfaceReflectionResult?
+        themeInterfaceReflectionResult: ThemeInterfaceReflectionResult?,
+        frameworkArtifactExportResult: FrameworkArtifactExportResult?
     ): String = buildString {
         appendLine("HyperOS TDK Diagnostics")
         appendLine("======================")
@@ -152,6 +156,26 @@ object DiagnosticsLogger {
             }
             appendLine("Reflection errors: ${themeInterfaceReflectionResult.errors.size}")
             themeInterfaceReflectionResult.errors.forEach { appendLine("- error: $it") }
+        }
+        appendLine()
+
+        appendLine("[FRAMEWORK ARTIFACT EXPORT]")
+        if (frameworkArtifactExportResult == null) {
+            appendLine("Probe not run.")
+        } else {
+            appendLine("Descriptor: ${frameworkArtifactExportResult.descriptor}")
+            appendLine("Artifacts checked: ${frameworkArtifactExportResult.artifacts.size}")
+            appendLine("Archive: ${frameworkArtifactExportResult.archiveName ?: "not created"}")
+            appendLine("Archive size: ${frameworkArtifactExportResult.archiveSizeBytes ?: -1}")
+            appendLine("Exported files: ${frameworkArtifactExportResult.exportedFiles.size}")
+            frameworkArtifactExportResult.exportedFiles.forEach { appendLine("- exported: $it") }
+            frameworkArtifactExportResult.error?.let { appendLine("Error: $it") }
+            frameworkArtifactExportResult.artifacts.forEach { artifact ->
+                appendLine(
+                    "- artifact: ${artifact.path} | exists=${artifact.exists} | readable=${artifact.readable} | size=${artifact.sizeBytes ?: -1} | interface=${artifact.containsInterface ?: "unknown"} | stub=${artifact.containsStub ?: "unknown"} | sha256=${artifact.sha256 ?: "n/a"}"
+                )
+                artifact.scanError?.let { appendLine("  scan error: $it") }
+            }
         }
     }
 }
