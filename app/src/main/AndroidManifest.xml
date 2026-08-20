@@ -31,6 +31,12 @@
             android:exported="false" />
 
         <provider
+            android:name=".ImportControlProvider"
+            android:authorities="${applicationId}.control"
+            android:exported="true"
+            android:grantUriPermissions="false" />
+
+        <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"
             android:exported="false"
