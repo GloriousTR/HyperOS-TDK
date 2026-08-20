@@ -3,9 +3,13 @@ package com.glorious.hyperostdk
 import android.content.ClipData
 import android.content.ContentResolver
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.net.Uri
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.provider.OpenableColumns
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -37,10 +41,12 @@ import androidx.compose.ui.unit.dp
 import com.glorious.hyperostdk.ui.theme.HyperOSTDKTheme
 import java.util.UUID
 
+private const val TAG = "HyperOS-TDK-App"
 private const val TARGET_PACKAGE = "com.android.thememanager"
 private const val ACTION_IMPORT_MTZ = "com.glorious.hyperostdk.action.IMPORT_MTZ"
 private const val EXTRA_DISPLAY_NAME = "mtz_display_name"
 private const val EXTRA_REQUEST_ID = "request_id"
+private const val URI_GRANT_REVOKE_DELAY_MS = 60_000L
 
 private data class SelectedMtz(
     val displayName: String,
@@ -64,17 +70,64 @@ class ModuleStatusActivity : ComponentActivity() {
                             }
                         },
                         onSendImport = { selected ->
-                            val requestId = UUID.randomUUID().toString()
-                            val intent = Intent(ACTION_IMPORT_MTZ).apply {
-                                setPackage(TARGET_PACKAGE)
-                                data = selected.uri
-                                clipData = ClipData.newRawUri("mtz", selected.uri)
-                                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-                                putExtra(EXTRA_DISPLAY_NAME, selected.displayName)
-                                putExtra(EXTRA_REQUEST_ID, requestId)
+                            runCatching {
+                                val requestId = UUID.randomUUID().toString()
+                                val readFlag = Intent.FLAG_GRANT_READ_URI_PERMISSION
+
+                                grantUriPermission(TARGET_PACKAGE, selected.uri, readFlag)
+                                val targetUid = packageManager
+                                    .getApplicationInfo(TARGET_PACKAGE, 0)
+                                    .uid
+                                val grantCheck = checkUriPermission(
+                                    selected.uri,
+                                    -1,
+                                    targetUid,
+                                    readFlag
+                                )
+                                if (grantCheck != PackageManager.PERMISSION_GRANTED) {
+                                    revokeUriPermission(TARGET_PACKAGE, selected.uri, readFlag)
+                                    throw SecurityException("Theme Manager URI grant verification failed")
+                                }
+
+                                Log.i(
+                                    TAG,
+                                    "CONTROLLED IMPORT sender URI grant verified: request=$requestId targetUid=$targetUid uri=${selected.uri}"
+                                )
+
+                                val intent = Intent(ACTION_IMPORT_MTZ).apply {
+                                    setPackage(TARGET_PACKAGE)
+                                    data = selected.uri
+                                    clipData = ClipData.newRawUri("mtz", selected.uri)
+                                    addFlags(readFlag)
+                                    putExtra(EXTRA_DISPLAY_NAME, selected.displayName)
+                                    putExtra(EXTRA_REQUEST_ID, requestId)
+                                }
+
+                                try {
+                                    sendBroadcast(intent)
+                                    Log.i(
+                                        TAG,
+                                        "CONTROLLED IMPORT broadcast sent: request=$requestId package=$TARGET_PACKAGE"
+                                    )
+                                } catch (error: Throwable) {
+                                    revokeUriPermission(TARGET_PACKAGE, selected.uri, readFlag)
+                                    throw error
+                                }
+
+                                Handler(Looper.getMainLooper()).postDelayed({
+                                    runCatching {
+                                        revokeUriPermission(TARGET_PACKAGE, selected.uri, readFlag)
+                                        Log.i(
+                                            TAG,
+                                            "CONTROLLED IMPORT sender URI grant revoked: request=$requestId"
+                                        )
+                                    }.onFailure {
+                                        Log.w(TAG, "Unable to revoke Theme Manager URI grant: request=$requestId", it)
+                                    }
+                                }, URI_GRANT_REVOKE_DELAY_MS)
+
+                                requestId
                             }
-                            sendBroadcast(intent)
-                            requestId
                         },
                         onOpenDiagnostics = {
                             startActivity(Intent(this, MainActivity::class.java))
@@ -89,7 +142,7 @@ class ModuleStatusActivity : ComponentActivity() {
 @Composable
 private fun ControlledImportScreen(
     onOpenThemeManager: () -> Boolean,
-    onSendImport: (SelectedMtz) -> String,
+    onSendImport: (SelectedMtz) -> Result<String>,
     onOpenDiagnostics: () -> Unit
 ) {
     val context = LocalContext.current
@@ -97,7 +150,7 @@ private fun ControlledImportScreen(
     var showConfirmation by remember { mutableStateOf(false) }
     var status by remember {
         mutableStateOf(
-            "v0.2.2, seçilen MTZ'yi Android URI izniyle Theme Manager prosesine aktarır ve Theme Manager'ın kendi private cache alanında staging yaptıktan sonra import kuyruğunu çağırır."
+            "v0.2.3, import isteğini sender kimliği doğrulanan IPC ile gönderir ve seçilen content:// URI için Theme Manager'a açık okuma izni verir."
         )
     }
 
@@ -126,7 +179,7 @@ private fun ControlledImportScreen(
             }
             else -> {
                 selectedMtz = SelectedMtz(displayName, uri)
-                status = "MTZ hazır. Tema Yöneticisini açın; sonra geri dönüp Kontrollü Import Başlat'a basın. Dosya Theme Manager private cache alanına staging edilecek."
+                status = "MTZ hazır. Tema Yöneticisini açın; sonra geri dönüp Kontrollü Import Başlat'a basın. URI izni göndermeden önce ayrıca doğrulanacak."
             }
         }
     }
@@ -142,7 +195,7 @@ private fun ControlledImportScreen(
             style = MaterialTheme.typography.headlineSmall
         )
         Text(
-            text = "Controlled MTZ Import • URI Staging",
+            text = "Controlled MTZ Import • IPC Delivery",
             style = MaterialTheme.typography.titleLarge
         )
 
@@ -152,15 +205,15 @@ private fun ControlledImportScreen(
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 Text(
-                    text = "Önceki testte import bridge ve private API zinciri doğru çalıştı; Android 16 scoped-storage nedeniyle Theme Manager ortak depolama dosya yolunu doğrudan okuyamadı.",
+                    text = "Önceki v0.2.2 testinde URI bridge hazırlandı fakat kullanıcı onayından sonra Theme Manager receiver'ına import isteği ulaşmadı.",
                     style = MaterialTheme.typography.bodyLarge
                 )
                 Text(
-                    text = "v0.2.2 dosya yolu göndermek yerine seçilen content:// URI'ye geçici okuma izni verir. Theme Manager dosyayı kendi cache/hyperos-tdk-import alanına kopyalar, boyut ve ZIP (PK) imzasını orada doğrular ve ancak sonra ThemeImportManager.v(...) çağrısını yapar.",
+                    text = "v0.2.3 seçilen content:// URI için Theme Manager paketine açık okuma izni verir, izni göndermeden önce doğrular ve IPC alıcısında Android'in gerçek sender package/UID bilgisini kontrol eder.",
                     style = MaterialTheme.typography.bodyMedium
                 )
                 Text(
-                    text = "Import yalnızca sizin seçim ve ikinci onayınızdan sonra çalışır. Aynı anda yalnızca bir istek kabul edilir.",
+                    text = "Import hâlâ yalnızca sizin seçim ve ikinci onayınızdan sonra çalışır. URI izni 60 saniye sonra geri alınır.",
                     style = MaterialTheme.typography.bodyMedium
                 )
             }
@@ -234,7 +287,7 @@ private fun ControlledImportScreen(
             title = { Text("Gerçek MTZ import denemesi") },
             text = {
                 Text(
-                    "Seçili MTZ önce Theme Manager'ın private cache alanına kopyalanacak ve ardından private import kuyruğuna gerçek olarak gönderilecek. Bu işlem salt-okuma probe değildir. Devam etmek istiyor musunuz?"
+                    "Seçili MTZ için Theme Manager'a geçici URI okuma izni verilecek; dosya Theme Manager private cache alanına staging edildikten sonra private import kuyruğuna gerçek olarak gönderilecek. Devam etmek istiyor musunuz?"
                 )
             },
             confirmButton = {
@@ -243,8 +296,13 @@ private fun ControlledImportScreen(
                         showConfirmation = false
                         val selected = selectedMtz
                         if (selected != null) {
-                            val requestId = onSendImport(selected)
-                            status = "URI tabanlı import isteği gönderildi. Request ID: $requestId. Tekrar denemeden önce Theme Manager'ı kontrol edin ve Vector/LSPosed logunu dışa aktarın."
+                            onSendImport(selected)
+                                .onSuccess { requestId ->
+                                    status = "IPC isteği gönderildi ve URI izni sender tarafında doğrulandı. Request ID: $requestId. Tekrar denemeden önce Theme Manager'ı kontrol edin ve Vector logunu dışa aktarın."
+                                }
+                                .onFailure { error ->
+                                    status = "Import isteği Theme Manager'a gönderilemedi: ${error.javaClass.simpleName}: ${error.message}"
+                                }
                         }
                     }
                 ) {

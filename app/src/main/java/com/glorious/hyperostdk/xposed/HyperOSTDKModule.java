@@ -7,6 +7,7 @@ import android.content.Intent;
 import android.content.IntentFilter;
 import android.net.Uri;
 import android.os.Build;
+import android.os.Process;
 import android.util.Log;
 
 import java.io.File;
@@ -28,19 +29,18 @@ import io.github.libxposed.api.XposedModule;
 /**
  * LSPosed bridge for Xiaomi Theme Manager.
  *
- * <p>v0.2.2 keeps the proven private import path but replaces direct shared-storage path access
- * with Android URI permission handoff. The Theme Manager process copies the explicitly selected
- * content URI into its own private cache, validates the staged MTZ, and only then invokes the
- * internal ThemeImportManager. No import is triggered automatically.</p>
+ * <p>v0.2.3 keeps URI staging but hardens IPC delivery. Instead of relying on a custom
+ * signature-permission filter for a dynamically registered receiver, the receiver validates the
+ * Android 14+ sender identity reported by BroadcastReceiver itself. No import is triggered
+ * automatically.</p>
  */
 public final class HyperOSTDKModule extends XposedModule {
     private static final String TAG = "HyperOS-TDK";
     private static final String TARGET_PACKAGE = "com.android.thememanager";
+    private static final String SENDER_PACKAGE = "com.glorious.hyperostdk";
 
     public static final String ACTION_IMPORT_MTZ =
             "com.glorious.hyperostdk.action.IMPORT_MTZ";
-    public static final String CONTROL_PERMISSION =
-            "com.glorious.hyperostdk.permission.IMPORT_CONTROL";
     public static final String EXTRA_DISPLAY_NAME = "mtz_display_name";
     public static final String EXTRA_REQUEST_ID = "request_id";
 
@@ -132,13 +132,37 @@ public final class HyperOSTDKModule extends XposedModule {
                 if (!ACTION_IMPORT_MTZ.equals(intent.getAction())) {
                     return;
                 }
+
                 String requestId = intent.getStringExtra(EXTRA_REQUEST_ID);
+                String safeRequestId = requestId == null || requestId.isBlank() ? "unknown" : requestId;
+
+                if (Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                    log(Log.ERROR, TAG, "CONTROLLED IMPORT IPC rejected: sender identity API unavailable; request="
+                            + safeRequestId);
+                    return;
+                }
+
+                String sentFromPackage = getSentFromPackage();
+                int sentFromUid = getSentFromUid();
+                boolean trusted = SENDER_PACKAGE.equals(sentFromPackage)
+                        || uidOwnsPackage(receiverContext, sentFromUid, SENDER_PACKAGE);
+
+                log(Log.INFO, TAG, "CONTROLLED IMPORT IPC received: request=" + safeRequestId
+                        + " senderPackage=" + sentFromPackage + " senderUid=" + sentFromUid
+                        + " trusted=" + trusted);
+
+                if (!trusted || sentFromUid == Process.INVALID_UID) {
+                    log(Log.ERROR, TAG, "CONTROLLED IMPORT IPC rejected: untrusted sender; request="
+                            + safeRequestId);
+                    return;
+                }
+
                 String displayName = intent.getStringExtra(EXTRA_DISPLAY_NAME);
                 Uri uri = intent.getData();
                 PendingResult pendingResult = goAsync();
                 importExecutor.execute(() -> {
                     try {
-                        handleControlledImport(appContext, requestId, displayName, uri);
+                        handleControlledImport(appContext, safeRequestId, displayName, uri);
                     } finally {
                         pendingResult.finish();
                     }
@@ -148,15 +172,9 @@ public final class HyperOSTDKModule extends XposedModule {
 
         IntentFilter controlFilter = new IntentFilter(ACTION_IMPORT_MTZ);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            appContext.registerReceiver(
-                    controlReceiver,
-                    controlFilter,
-                    CONTROL_PERMISSION,
-                    null,
-                    Context.RECEIVER_EXPORTED
-            );
+            appContext.registerReceiver(controlReceiver, controlFilter, Context.RECEIVER_EXPORTED);
         } else {
-            appContext.registerReceiver(controlReceiver, controlFilter, CONTROL_PERMISSION, null);
+            appContext.registerReceiver(controlReceiver, controlFilter);
         }
 
         BroadcastReceiver resultMonitor = new BroadcastReceiver() {
@@ -186,7 +204,23 @@ public final class HyperOSTDKModule extends XposedModule {
             appContext.registerReceiver(resultMonitor, resultFilter);
         }
 
-        log(Log.INFO, TAG, "CONTROLLED IMPORT BRIDGE READY: protected URI receiver registered in Theme Manager process.");
+        log(Log.INFO, TAG, "CONTROLLED IMPORT BRIDGE READY: sender-verified URI receiver registered in Theme Manager process.");
+    }
+
+    private boolean uidOwnsPackage(Context context, int uid, String packageName) {
+        if (uid == Process.INVALID_UID) {
+            return false;
+        }
+        String[] packages = context.getPackageManager().getPackagesForUid(uid);
+        if (packages == null) {
+            return false;
+        }
+        for (String candidate : packages) {
+            if (packageName.equals(candidate)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private void handleControlledImport(Context context, String requestId, String displayName, Uri uri) {
@@ -390,7 +424,7 @@ public final class HyperOSTDKModule extends XposedModule {
             );
             assertReturnType(importMethod, void.class,
                     THEME_IMPORT_MANAGER + ".v(ResourceContext, Resource)");
-            log(Log.INFO, TAG, "[OK] Import method is present and remains idle until a protected user request: "
+            log(Log.INFO, TAG, "[OK] Import method is present and remains idle until a sender-verified user request: "
                     + importMethod);
 
             Method localImportCaller = requireMethod(localCustomizeTaskClass, "e", Void[].class);
