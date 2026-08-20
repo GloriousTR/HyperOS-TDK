@@ -1,11 +1,10 @@
 package com.glorious.hyperostdk
 
+import android.content.ClipData
 import android.content.ContentResolver
-import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
-import android.provider.DocumentsContract
 import android.provider.OpenableColumns
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -40,12 +39,12 @@ import java.util.UUID
 
 private const val TARGET_PACKAGE = "com.android.thememanager"
 private const val ACTION_IMPORT_MTZ = "com.glorious.hyperostdk.action.IMPORT_MTZ"
-private const val EXTRA_PATH = "mtz_path"
+private const val EXTRA_DISPLAY_NAME = "mtz_display_name"
 private const val EXTRA_REQUEST_ID = "request_id"
 
 private data class SelectedMtz(
     val displayName: String,
-    val rawPath: String
+    val uri: Uri
 )
 
 class ModuleStatusActivity : ComponentActivity() {
@@ -68,7 +67,10 @@ class ModuleStatusActivity : ComponentActivity() {
                             val requestId = UUID.randomUUID().toString()
                             val intent = Intent(ACTION_IMPORT_MTZ).apply {
                                 setPackage(TARGET_PACKAGE)
-                                putExtra(EXTRA_PATH, selected.rawPath)
+                                data = selected.uri
+                                clipData = ClipData.newRawUri("mtz", selected.uri)
+                                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+                                putExtra(EXTRA_DISPLAY_NAME, selected.displayName)
                                 putExtra(EXTRA_REQUEST_ID, requestId)
                             }
                             sendBroadcast(intent)
@@ -95,7 +97,7 @@ private fun ControlledImportScreen(
     var showConfirmation by remember { mutableStateOf(false) }
     var status by remember {
         mutableStateOf(
-            "Readiness testi cihazınızda 10/10 doğrulandı. Bu sürüm yalnızca sizin açık onayınızdan sonra gerçek import isteği gönderir."
+            "v0.2.2, seçilen MTZ'yi Android URI izniyle Theme Manager prosesine aktarır ve Theme Manager'ın kendi private cache alanında staging yaptıktan sonra import kuyruğunu çağırır."
         )
     }
 
@@ -112,24 +114,19 @@ private fun ControlledImportScreen(
         val displayName = queryDisplayName(context.contentResolver, uri)
             ?: uri.lastPathSegment
             ?: "seçili dosya"
-        val rawPath = resolveSharedStoragePath(context, uri)
 
         when {
             !displayName.endsWith(".mtz", ignoreCase = true) -> {
                 selectedMtz = null
                 status = "Seçilen dosya .mtz uzantılı değil: $displayName"
             }
-            rawPath == null -> {
+            uri.scheme != ContentResolver.SCHEME_CONTENT -> {
                 selectedMtz = null
-                status = "MTZ seçildi ancak doğrudan ortak depolama yolu alınamadı. v0.2.1 ilk gerçek testte yalnızca /storage/emulated/0 altındaki raw dosya yollarını kabul ediyor. Dosyayı Downloads klasöründen seçmeyi deneyin."
-            }
-            !rawPath.startsWith("/storage/emulated/0/") -> {
-                selectedMtz = null
-                status = "Güvenlik nedeniyle yalnızca /storage/emulated/0 altındaki MTZ dosyaları kabul ediliyor."
+                status = "Bu test için Android belge sağlayıcısından gelen content:// MTZ URI'si gerekiyor."
             }
             else -> {
-                selectedMtz = SelectedMtz(displayName, rawPath)
-                status = "MTZ hazır. Önce Tema Yöneticisini açın; sonra geri dönüp Kontrollü Import Başlat'a basın."
+                selectedMtz = SelectedMtz(displayName, uri)
+                status = "MTZ hazır. Tema Yöneticisini açın; sonra geri dönüp Kontrollü Import Başlat'a basın. Dosya Theme Manager private cache alanına staging edilecek."
             }
         }
     }
@@ -145,7 +142,7 @@ private fun ControlledImportScreen(
             style = MaterialTheme.typography.headlineSmall
         )
         Text(
-            text = "Controlled MTZ Import",
+            text = "Controlled MTZ Import • URI Staging",
             style = MaterialTheme.typography.titleLarge
         )
 
@@ -155,15 +152,15 @@ private fun ControlledImportScreen(
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 Text(
-                    text = "LSPosed readiness logu 10/10 geçti. Import, Theme Manager prosesindeki gerçek ThemeImportManager.v(ResourceContext, Resource) yoluna gönderilir.",
+                    text = "Önceki testte import bridge ve private API zinciri doğru çalıştı; Android 16 scoped-storage nedeniyle Theme Manager ortak depolama dosya yolunu doğrudan okuyamadı.",
                     style = MaterialTheme.typography.bodyLarge
                 )
                 Text(
-                    text = "Koruma: İstek yalnızca HyperOS TDK imzasına ait permission ile kabul edilir; hedef dosya .mtz olmalı, /storage/emulated/0 altında bulunmalı, Theme Manager tarafından okunabilmeli ve ZIP (PK) imzasına sahip olmalıdır.",
+                    text = "v0.2.2 dosya yolu göndermek yerine seçilen content:// URI'ye geçici okuma izni verir. Theme Manager dosyayı kendi cache/hyperos-tdk-import alanına kopyalar, boyut ve ZIP (PK) imzasını orada doğrular ve ancak sonra ThemeImportManager.v(...) çağrısını yapar.",
                     style = MaterialTheme.typography.bodyMedium
                 )
                 Text(
-                    text = "İlk gerçek test olduğu için Tema Yöneticisi kapanabilir veya import reddedilebilir. İşlem sistem bölümüne dosya yazmaz; Theme Manager'ın kendi import kuyruğunu çağırır.",
+                    text = "Import yalnızca sizin seçim ve ikinci onayınızdan sonra çalışır. Aynı anda yalnızca bir istek kabul edilir.",
                     style = MaterialTheme.typography.bodyMedium
                 )
             }
@@ -173,7 +170,7 @@ private fun ControlledImportScreen(
             modifier = Modifier.fillMaxWidth(),
             onClick = {
                 status = if (onOpenThemeManager()) {
-                    "Tema Yöneticisi açıldı. Modülün kontrol alıcısı proses içinde hazırlandıktan sonra HyperOS TDK'ya geri dönün."
+                    "Tema Yöneticisi açıldı. Modül bridge'i proses içinde hazırlandıktan sonra HyperOS TDK'ya geri dönün."
                 } else {
                     "Tema Yöneticisi launcher activity bulunamadı."
                 }
@@ -198,7 +195,7 @@ private fun ControlledImportScreen(
                     Text("Seçilen MTZ", style = MaterialTheme.typography.labelLarge)
                     Text(selected.displayName)
                     Text(
-                        selected.rawPath,
+                        selected.uri.toString(),
                         style = MaterialTheme.typography.bodySmall,
                         fontFamily = FontFamily.Monospace
                     )
@@ -237,7 +234,7 @@ private fun ControlledImportScreen(
             title = { Text("Gerçek MTZ import denemesi") },
             text = {
                 Text(
-                    "Seçili MTZ, Theme Manager'ın private import kuyruğuna gerçek olarak gönderilecek. Bu işlem artık salt-okuma probe değildir. Tema Yöneticisi çökebilir, dosyayı reddedebilir veya temayı yerel kaynaklara import edebilir. Devam etmek istiyor musunuz?"
+                    "Seçili MTZ önce Theme Manager'ın private cache alanına kopyalanacak ve ardından private import kuyruğuna gerçek olarak gönderilecek. Bu işlem salt-okuma probe değildir. Devam etmek istiyor musunuz?"
                 )
             },
             confirmButton = {
@@ -247,7 +244,7 @@ private fun ControlledImportScreen(
                         val selected = selectedMtz
                         if (selected != null) {
                             val requestId = onSendImport(selected)
-                            status = "Import isteği gönderildi. Request ID: $requestId. Birkaç saniye bekleyin; Tema Yöneticisini kontrol edin ve ardından Vector/LSPosed logunu dışa aktarın."
+                            status = "URI tabanlı import isteği gönderildi. Request ID: $requestId. Tekrar denemeden önce Theme Manager'ı kontrol edin ve Vector/LSPosed logunu dışa aktarın."
                         }
                     }
                 ) {
@@ -261,24 +258,6 @@ private fun ControlledImportScreen(
             }
         )
     }
-}
-
-private fun resolveSharedStoragePath(context: Context, uri: Uri): String? {
-    if (uri.scheme == ContentResolver.SCHEME_FILE) {
-        return uri.path
-    }
-
-    return runCatching {
-        if (!DocumentsContract.isDocumentUri(context, uri)) {
-            return@runCatching null
-        }
-        val documentId = DocumentsContract.getDocumentId(uri)
-        if (documentId.startsWith("raw:")) {
-            documentId.removePrefix("raw:")
-        } else {
-            null
-        }
-    }.getOrNull()
 }
 
 private fun queryDisplayName(contentResolver: ContentResolver, uri: Uri): String? {
