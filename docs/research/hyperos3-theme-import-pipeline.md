@@ -96,16 +96,42 @@ com.android.thememanager.basemodule.unzip.c
 
 This is direct evidence that Theme Manager can import an MTZ from a filesystem path through its internal import pipeline.
 
-## 4. Architectural consequence
+## 4. v0.2.0 in-process validation passed on the target device
 
-Standard public `VIEW` / `SEND` intent probing produced no MTZ handler, and the Binder service is not an MTZ import API. The next viable route is therefore code executing inside the Theme Manager process.
-
-HyperOS TDK v0.2.0 introduces a modern LSPosed entry scoped only to:
+HyperOS TDK v0.2.0 was enabled through the device's modern Xposed framework (Vector API 102), scoped only to:
 
 ```text
 com.android.thememanager
 ```
 
-The first LSPosed milestone is intentionally read-only: it resolves the exact classes, constructors and methods above using the Theme Manager process ClassLoader and logs a readiness result. It does not invoke `ThemeImportManager.v(...)`, hook behavior, import a theme, or modify Theme Manager state.
+Two independent Theme Manager process starts produced the same result:
 
-Once the in-process signatures are confirmed on the target build, a later controlled-import milestone can reproduce the Theme Manager-owned call sequence with an explicitly selected MTZ.
+```text
+READINESS RESULT: 10/10 checks passed. No Theme Manager method was invoked.
+```
+
+The runtime ClassLoader resolved the exact controller, ResourceContext, Resource, ThemeImportManager and local customize caller signatures discovered during static analysis. No HyperOS-TDK exception or fatal error was observed in the exported framework log around those readiness runs.
+
+## 5. v0.2.1 controlled-import boundary
+
+Because the in-process signatures are now device-confirmed, v0.2.1 introduces the first explicitly user-triggered import request. It does not import anything automatically at module load.
+
+The control path is intentionally constrained:
+
+```text
+HyperOS TDK app
+  -> user selects an .mtz
+  -> user confirms a warning dialog
+  -> signature-protected broadcast
+  -> receiver registered inside ThemeApplication
+  -> validate /storage/emulated/0 path + .mtz + readable file + PK ZIP signature
+  -> new Resource()
+  -> Resource.setDownloadPath(path)
+  -> controller.a.e().g().a() -> ResourceContext
+  -> controller.a.e().i() -> ThemeImportManager
+  -> ThemeImportManager.v(ResourceContext, Resource)
+```
+
+The module also monitors Theme Manager's own import lifecycle broadcasts (`start`, `udpate`, `complete`, `fail`) and writes them to the `HyperOS-TDK` framework log for the first controlled test.
+
+This milestone may change Theme Manager state because it calls the genuine private import queue. It does not write to `/system`, issue Binder transactions, or apply an MTZ automatically outside Theme Manager's own import pipeline.
