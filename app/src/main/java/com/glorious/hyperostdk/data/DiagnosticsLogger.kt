@@ -6,6 +6,7 @@ import com.glorious.hyperostdk.BuildConfig
 import com.glorious.hyperostdk.model.DeviceInfo
 import com.glorious.hyperostdk.model.IntentProbeResult
 import com.glorious.hyperostdk.model.MtzInfo
+import com.glorious.hyperostdk.model.ThemeInterfaceReflectionResult
 import com.glorious.hyperostdk.model.ThemeManagerInfo
 import com.glorious.hyperostdk.model.ThemeServiceProbeResult
 import java.io.File
@@ -22,7 +23,8 @@ object DiagnosticsLogger {
         themeManagerInfo: ThemeManagerInfo,
         mtzInfo: MtzInfo?,
         intentProbeResults: List<IntentProbeResult> = emptyList(),
-        themeServiceProbeResult: ThemeServiceProbeResult? = null
+        themeServiceProbeResult: ThemeServiceProbeResult? = null,
+        themeInterfaceReflectionResult: ThemeInterfaceReflectionResult? = null
     ): File {
         val root = context.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS) ?: context.filesDir
         val directory = File(root, "diagnostics").apply { mkdirs() }
@@ -36,7 +38,8 @@ object DiagnosticsLogger {
                 themeManagerInfo = themeManagerInfo,
                 mtzInfo = mtzInfo,
                 intentProbeResults = intentProbeResults,
-                themeServiceProbeResult = themeServiceProbeResult
+                themeServiceProbeResult = themeServiceProbeResult,
+                themeInterfaceReflectionResult = themeInterfaceReflectionResult
             )
         )
         return file
@@ -48,7 +51,8 @@ object DiagnosticsLogger {
         themeManagerInfo: ThemeManagerInfo,
         mtzInfo: MtzInfo?,
         intentProbeResults: List<IntentProbeResult>,
-        themeServiceProbeResult: ThemeServiceProbeResult?
+        themeServiceProbeResult: ThemeServiceProbeResult?,
+        themeInterfaceReflectionResult: ThemeInterfaceReflectionResult?
     ): String = buildString {
         appendLine("HyperOS TDK Diagnostics")
         appendLine("======================")
@@ -126,6 +130,28 @@ object DiagnosticsLogger {
             appendLine("Binder alive: ${themeServiceProbeResult.binderAlive ?: "unknown"}")
             appendLine("Ping binder: ${themeServiceProbeResult.pingBinder ?: "unknown"}")
             themeServiceProbeResult.error?.let { appendLine("Error: $it") }
+        }
+        appendLine()
+
+        appendLine("[THEME INTERFACE REFLECTION]")
+        if (themeInterfaceReflectionResult == null) {
+            appendLine("Probe not run.")
+        } else {
+            appendLine("Descriptor: ${themeInterfaceReflectionResult.descriptor}")
+            appendLine("Interface class loaded: ${themeInterfaceReflectionResult.interfaceClassLoaded}")
+            appendLine("Stub class loaded: ${themeInterfaceReflectionResult.stubClassLoaded}")
+            appendLine("Interface methods: ${themeInterfaceReflectionResult.interfaceMethods.size}")
+            themeInterfaceReflectionResult.interfaceMethods.forEach { appendLine("- method: $it") }
+            appendLine("Stub methods: ${themeInterfaceReflectionResult.stubMethods.size}")
+            themeInterfaceReflectionResult.stubMethods.forEach { appendLine("- stub: $it") }
+            appendLine("Transaction fields: ${themeInterfaceReflectionResult.transactionFields.size}")
+            themeInterfaceReflectionResult.transactionFields.forEach { appendLine("- field: $it") }
+            appendLine("Transaction names: ${themeInterfaceReflectionResult.transactionNames.size}")
+            themeInterfaceReflectionResult.transactionNames.forEach { transaction ->
+                appendLine("- transaction: ${transaction.code} -> ${transaction.name}")
+            }
+            appendLine("Reflection errors: ${themeInterfaceReflectionResult.errors.size}")
+            themeInterfaceReflectionResult.errors.forEach { appendLine("- error: $it") }
         }
     }
 }
