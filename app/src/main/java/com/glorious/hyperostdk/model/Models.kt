@@ -67,3 +67,19 @@ data class ThemeServiceProbeResult(
     val pingBinder: Boolean?,
     val error: String? = null
 )
+
+data class ThemeTransactionInfo(
+    val code: Int,
+    val name: String
+)
+
+data class ThemeInterfaceReflectionResult(
+    val descriptor: String,
+    val interfaceClassLoaded: Boolean,
+    val stubClassLoaded: Boolean,
+    val interfaceMethods: List<String>,
+    val stubMethods: List<String>,
+    val transactionFields: List<String>,
+    val transactionNames: List<ThemeTransactionInfo>,
+    val errors: List<String>
+)
