@@ -1,6 +1,5 @@
 package com.glorious.hyperostdk.xposed;
 
-import android.app.Application;
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
@@ -43,6 +42,8 @@ public final class HyperOSTDKModule extends XposedModule {
     private static final String ACTION_IMPORT_COMPLETE = "action_resource_import_complete";
     private static final String ACTION_IMPORT_FAIL = "action_resource_import_fail";
 
+    private static final String THEME_APPLICATION =
+            "com.android.thememanager.ThemeApplication";
     private static final String CONTROLLER =
             "com.android.thememanager.basemodule.controller.a";
     private static final String CONTROLLER_RESOURCE_CONTEXT =
@@ -78,36 +79,42 @@ public final class HyperOSTDKModule extends XposedModule {
         themeManagerClassLoader = param.getClassLoader();
         log(Log.INFO, TAG, "Theme Manager package ready; starting import readiness probe.");
         runReadOnlyProbe(param.getClassLoader());
-        installApplicationAttachBridge();
+        installThemeApplicationBridge(param.getClassLoader());
     }
 
-    private void installApplicationAttachBridge() {
+    private void installThemeApplicationBridge(ClassLoader classLoader) {
         try {
-            Method attach = Application.class.getDeclaredMethod("attach", Context.class);
-            hook(attach).intercept(chain -> {
+            Class<?> themeApplicationClass = Class.forName(THEME_APPLICATION, false, classLoader);
+            Method onCreate = themeApplicationClass.getDeclaredMethod("onCreate");
+            hook(onCreate).intercept(chain -> {
                 Object result = chain.proceed();
                 try {
                     Object thisObject = chain.getThisObject();
-                    if (thisObject instanceof Application) {
-                        registerControlBridge((Application) thisObject);
+                    if (thisObject instanceof Context) {
+                        registerControlBridge((Context) thisObject);
+                    } else {
+                        log(Log.ERROR, TAG, "ThemeApplication.onCreate thisObject is not a Context");
                     }
                 } catch (Throwable error) {
-                    log(Log.ERROR, TAG, "Failed to register controlled import bridge after Application.attach", error);
+                    log(Log.ERROR, TAG, "Failed to register controlled import bridge after ThemeApplication.onCreate", error);
                 }
                 return result;
             });
-            log(Log.INFO, TAG, "[OK] Application.attach bridge installed; no import is triggered automatically.");
+            log(Log.INFO, TAG, "[OK] ThemeApplication.onCreate bridge installed; no import is triggered automatically.");
         } catch (Throwable error) {
-            log(Log.ERROR, TAG, "Unable to install Application.attach bridge", error);
+            log(Log.ERROR, TAG, "Unable to install ThemeApplication.onCreate bridge", error);
         }
     }
 
-    private void registerControlBridge(Application application) {
+    private void registerControlBridge(Context applicationContextSource) {
         if (!controlBridgeRegistered.compareAndSet(false, true)) {
             return;
         }
 
-        Context context = application.getApplicationContext();
+        Context context = applicationContextSource.getApplicationContext();
+        if (context == null) {
+            context = applicationContextSource;
+        }
 
         BroadcastReceiver controlReceiver = new BroadcastReceiver() {
             @Override
