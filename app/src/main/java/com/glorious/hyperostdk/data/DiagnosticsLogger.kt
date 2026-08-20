@@ -4,6 +4,7 @@ import android.content.Context
 import android.os.Environment
 import com.glorious.hyperostdk.BuildConfig
 import com.glorious.hyperostdk.model.DeviceInfo
+import com.glorious.hyperostdk.model.IntentProbeResult
 import com.glorious.hyperostdk.model.MtzInfo
 import com.glorious.hyperostdk.model.ThemeManagerInfo
 import java.io.File
@@ -18,7 +19,8 @@ object DiagnosticsLogger {
         context: Context,
         deviceInfo: DeviceInfo,
         themeManagerInfo: ThemeManagerInfo,
-        mtzInfo: MtzInfo?
+        mtzInfo: MtzInfo?,
+        intentProbeResults: List<IntentProbeResult> = emptyList()
     ): File {
         val root = context.getExternalFilesDir(Environment.DIRECTORY_DOCUMENTS) ?: context.filesDir
         val directory = File(root, "diagnostics").apply { mkdirs() }
@@ -30,7 +32,8 @@ object DiagnosticsLogger {
                 generatedAt = now.format(displayTimestamp),
                 deviceInfo = deviceInfo,
                 themeManagerInfo = themeManagerInfo,
-                mtzInfo = mtzInfo
+                mtzInfo = mtzInfo,
+                intentProbeResults = intentProbeResults
             )
         )
         return file
@@ -40,7 +43,8 @@ object DiagnosticsLogger {
         generatedAt: String,
         deviceInfo: DeviceInfo,
         themeManagerInfo: ThemeManagerInfo,
-        mtzInfo: MtzInfo?
+        mtzInfo: MtzInfo?,
+        intentProbeResults: List<IntentProbeResult>
     ): String = buildString {
         appendLine("HyperOS TDK Diagnostics")
         appendLine("======================")
@@ -87,6 +91,22 @@ object DiagnosticsLogger {
             mtzInfo.warning?.let { appendLine("Warning: $it") }
             appendLine("Entries: ${mtzInfo.entries.size}")
             mtzInfo.entries.forEach { appendLine("- $it") }
+        }
+        appendLine()
+
+        appendLine("[INTENT PROBE]")
+        if (intentProbeResults.isEmpty()) {
+            appendLine("Probe not run.")
+        } else {
+            val totalMatches = intentProbeResults.sumOf { it.matches.size }
+            appendLine("Candidates: ${intentProbeResults.size}")
+            appendLine("Total matches: $totalMatches")
+            intentProbeResults.forEach { result ->
+                appendLine("- ${result.label} | action=${result.action} | mime=${result.mimeType ?: "none"} | matches=${result.matches.size}")
+                result.matches.forEach { match ->
+                    appendLine("  -> ${match.componentName} | exported=${match.exported} | permission=${match.permission ?: "none"} | priority=${match.priority} | match=${match.match}")
+                }
+            }
         }
     }
 }

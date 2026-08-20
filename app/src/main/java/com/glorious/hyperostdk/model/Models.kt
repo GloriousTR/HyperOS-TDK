@@ -41,3 +41,18 @@ data class MtzInfo(
     val entries: List<String>,
     val warning: String? = null
 )
+
+data class IntentProbeMatch(
+    val componentName: String,
+    val exported: Boolean,
+    val permission: String?,
+    val priority: Int,
+    val match: Int
+)
+
+data class IntentProbeResult(
+    val label: String,
+    val action: String,
+    val mimeType: String?,
+    val matches: List<IntentProbeMatch>
+)
