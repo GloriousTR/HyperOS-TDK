@@ -56,3 +56,14 @@ data class IntentProbeResult(
     val mimeType: String?,
     val matches: List<IntentProbeMatch>
 )
+
+data class ThemeServiceProbeResult(
+    val componentName: String,
+    val bindRequested: Boolean,
+    val connected: Boolean,
+    val interfaceDescriptor: String?,
+    val binderClass: String?,
+    val binderAlive: Boolean?,
+    val pingBinder: Boolean?,
+    val error: String? = null
+)
