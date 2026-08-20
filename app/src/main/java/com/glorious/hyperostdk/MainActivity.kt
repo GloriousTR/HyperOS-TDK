@@ -43,11 +43,13 @@ import com.glorious.hyperostdk.data.DeviceInfoProvider
 import com.glorious.hyperostdk.data.DiagnosticsLogger
 import com.glorious.hyperostdk.data.IntentProbe
 import com.glorious.hyperostdk.data.MtzInspector
+import com.glorious.hyperostdk.data.ThemeInterfaceReflectionProbe
 import com.glorious.hyperostdk.data.ThemeManagerInspector
 import com.glorious.hyperostdk.data.ThemeServiceProbe
 import com.glorious.hyperostdk.model.DeviceInfo
 import com.glorious.hyperostdk.model.IntentProbeResult
 import com.glorious.hyperostdk.model.MtzInfo
+import com.glorious.hyperostdk.model.ThemeInterfaceReflectionResult
 import com.glorious.hyperostdk.model.ThemeManagerInfo
 import com.glorious.hyperostdk.model.ThemeServiceProbeResult
 import com.glorious.hyperostdk.ui.theme.HyperOSTDKTheme
@@ -91,9 +93,10 @@ private fun DiagnosticsScreen(onShareReport: (File) -> Unit) {
     var mtzInfo by remember { mutableStateOf<MtzInfo?>(null) }
     var probeResults by remember { mutableStateOf<List<IntentProbeResult>>(emptyList()) }
     var themeServiceProbeResult by remember { mutableStateOf<ThemeServiceProbeResult?>(null) }
+    var themeInterfaceReflectionResult by remember { mutableStateOf<ThemeInterfaceReflectionResult?>(null) }
     var isBusy by remember { mutableStateOf(false) }
     var status by remember {
-        mutableStateOf("v0.1.2 hazır. Intent Probe eşleşme üretmezse ThemeService Binder Probe çalıştırabilirsiniz.")
+        mutableStateOf("v0.1.3 hazır. ThemeService bağlantısından sonra IThemeService Reflection Probe çalıştırabilirsiniz.")
     }
 
     val mtzPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
@@ -117,7 +120,7 @@ private fun DiagnosticsScreen(onShareReport: (File) -> Unit) {
         }
     }
 
-    Scaffold(topBar = { TopAppBar(title = { Text("HyperOS TDK • v0.1.2") }) }) { innerPadding ->
+    Scaffold(topBar = { TopAppBar(title = { Text("HyperOS TDK • v0.1.3") }) }) { innerPadding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().padding(innerPadding),
             contentPadding = PaddingValues(16.dp),
@@ -137,6 +140,7 @@ private fun DiagnosticsScreen(onShareReport: (File) -> Unit) {
                             }.onSuccess {
                                 themeManagerInfo = it
                                 themeServiceProbeResult = null
+                                themeInterfaceReflectionResult = null
                                 status = if (it.installed) {
                                     "Theme Manager bulundu: ${it.packageName}"
                                 } else {
@@ -209,6 +213,7 @@ private fun DiagnosticsScreen(onShareReport: (File) -> Unit) {
                                 runCatching { ThemeServiceProbe.probe(context) }
                                     .onSuccess { result ->
                                         themeServiceProbeResult = result
+                                        themeInterfaceReflectionResult = null
                                         status = if (result.connected) {
                                             "ThemeService bağlantısı başarılı: ${result.interfaceDescriptor ?: "descriptor alınamadı"}"
                                         } else {
@@ -225,6 +230,41 @@ private fun DiagnosticsScreen(onShareReport: (File) -> Unit) {
 
                     Spacer(Modifier.height(12.dp))
                     ThemeServiceProbeContent(themeServiceProbeResult)
+                }
+            }
+            item {
+                InfoCard("IThemeService Reflection Probe") {
+                    Text(
+                        "Binder transaction çağrısı yapmaz. Cihazın runtime'ında descriptor sınıfını ve Stub sınıfını yüklemeyi; metod imzalarını ve statik TRANSACTION adlarını okumayı dener.",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    Button(
+                        enabled = !isBusy &&
+                            themeServiceProbeResult?.connected == true &&
+                            !themeServiceProbeResult?.interfaceDescriptor.isNullOrBlank(),
+                        onClick = {
+                            val descriptor = themeServiceProbeResult?.interfaceDescriptor ?: return@Button
+                            scope.launch {
+                                isBusy = true
+                                status = "$descriptor runtime reflection ile inceleniyor…"
+                                runCatching {
+                                    withContext(Dispatchers.Default) {
+                                        ThemeInterfaceReflectionProbe.probe(descriptor)
+                                    }
+                                }.onSuccess { result ->
+                                    themeInterfaceReflectionResult = result
+                                    status = "Reflection Probe tamamlandı: ${result.interfaceMethods.size} interface metodu, ${result.transactionNames.size} transaction adı."
+                                }.onFailure {
+                                    status = "Reflection Probe hatası: ${it.message}"
+                                }
+                                isBusy = false
+                            }
+                        }
+                    ) { Text("IThemeService Reflection Probe") }
+
+                    Spacer(Modifier.height(12.dp))
+                    ThemeInterfaceReflectionContent(themeInterfaceReflectionResult)
                 }
             }
             item {
@@ -249,7 +289,8 @@ private fun DiagnosticsScreen(onShareReport: (File) -> Unit) {
                                         themeManagerInfo = managerInfo,
                                         mtzInfo = mtzInfo,
                                         intentProbeResults = probeResults,
-                                        themeServiceProbeResult = themeServiceProbeResult
+                                        themeServiceProbeResult = themeServiceProbeResult,
+                                        themeInterfaceReflectionResult = themeInterfaceReflectionResult
                                     )
                                 }
                             }.onSuccess {
@@ -335,6 +376,53 @@ private fun ThemeServiceProbeContent(result: ThemeServiceProbeResult?) {
     result.error?.let {
         Spacer(Modifier.height(8.dp))
         Text(it, color = MaterialTheme.colorScheme.error)
+    }
+}
+
+@Composable
+private fun ThemeInterfaceReflectionContent(result: ThemeInterfaceReflectionResult?) {
+    if (result == null) {
+        Text("Henüz çalıştırılmadı.", style = MaterialTheme.typography.bodySmall)
+        return
+    }
+
+    Text("Descriptor\n${result.descriptor}", style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace)
+    KeyValue("Interface class", if (result.interfaceClassLoaded) "yüklendi" else "yüklenemedi")
+    KeyValue("Stub class", if (result.stubClassLoaded) "yüklendi" else "yüklenemedi")
+    KeyValue("Interface methods", result.interfaceMethods.size.toString())
+    KeyValue("Transaction fields", result.transactionFields.size.toString())
+    KeyValue("Transaction names", result.transactionNames.size.toString())
+
+    if (result.interfaceMethods.isNotEmpty()) {
+        Spacer(Modifier.height(8.dp))
+        Text("Interface metodları", style = MaterialTheme.typography.labelLarge)
+        result.interfaceMethods.forEach {
+            Text(it, style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace)
+        }
+    }
+
+    if (result.transactionNames.isNotEmpty()) {
+        Spacer(Modifier.height(8.dp))
+        Text("Transaction adları", style = MaterialTheme.typography.labelLarge)
+        result.transactionNames.forEach {
+            Text("${it.code} → ${it.name}", style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace)
+        }
+    }
+
+    if (result.transactionFields.isNotEmpty()) {
+        Spacer(Modifier.height(8.dp))
+        Text("TRANSACTION alanları", style = MaterialTheme.typography.labelLarge)
+        result.transactionFields.forEach {
+            Text(it, style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace)
+        }
+    }
+
+    if (result.errors.isNotEmpty()) {
+        Spacer(Modifier.height(8.dp))
+        Text("Reflection notları", style = MaterialTheme.typography.labelLarge)
+        result.errors.forEach {
+            Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall)
+        }
     }
 }
 
