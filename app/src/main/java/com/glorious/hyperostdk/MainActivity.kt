@@ -44,10 +44,12 @@ import com.glorious.hyperostdk.data.DiagnosticsLogger
 import com.glorious.hyperostdk.data.IntentProbe
 import com.glorious.hyperostdk.data.MtzInspector
 import com.glorious.hyperostdk.data.ThemeManagerInspector
+import com.glorious.hyperostdk.data.ThemeServiceProbe
 import com.glorious.hyperostdk.model.DeviceInfo
 import com.glorious.hyperostdk.model.IntentProbeResult
 import com.glorious.hyperostdk.model.MtzInfo
 import com.glorious.hyperostdk.model.ThemeManagerInfo
+import com.glorious.hyperostdk.model.ThemeServiceProbeResult
 import com.glorious.hyperostdk.ui.theme.HyperOSTDKTheme
 import java.io.File
 import kotlinx.coroutines.Dispatchers
@@ -88,8 +90,11 @@ private fun DiagnosticsScreen(onShareReport: (File) -> Unit) {
     var themeManagerInfo by remember { mutableStateOf<ThemeManagerInfo?>(null) }
     var mtzInfo by remember { mutableStateOf<MtzInfo?>(null) }
     var probeResults by remember { mutableStateOf<List<IntentProbeResult>>(emptyList()) }
+    var themeServiceProbeResult by remember { mutableStateOf<ThemeServiceProbeResult?>(null) }
     var isBusy by remember { mutableStateOf(false) }
-    var status by remember { mutableStateOf("v0.1.1 hazır. Theme Manager ve MTZ taramasından sonra Import Probe çalıştırabilirsiniz.") }
+    var status by remember {
+        mutableStateOf("v0.1.2 hazır. Intent Probe eşleşme üretmezse ThemeService Binder Probe çalıştırabilirsiniz.")
+    }
 
     val mtzPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
         if (uri == null) return@rememberLauncherForActivityResult
@@ -112,7 +117,7 @@ private fun DiagnosticsScreen(onShareReport: (File) -> Unit) {
         }
     }
 
-    Scaffold(topBar = { TopAppBar(title = { Text("HyperOS TDK • v0.1.1") }) }) { innerPadding ->
+    Scaffold(topBar = { TopAppBar(title = { Text("HyperOS TDK • v0.1.2") }) }) { innerPadding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().padding(innerPadding),
             contentPadding = PaddingValues(16.dp),
@@ -131,7 +136,12 @@ private fun DiagnosticsScreen(onShareReport: (File) -> Unit) {
                                 withContext(Dispatchers.IO) { ThemeManagerInspector.inspect(context) }
                             }.onSuccess {
                                 themeManagerInfo = it
-                                status = if (it.installed) "Theme Manager bulundu: ${it.packageName}" else "Theme Manager bulunamadı veya paket görünür değil."
+                                themeServiceProbeResult = null
+                                status = if (it.installed) {
+                                    "Theme Manager bulundu: ${it.packageName}"
+                                } else {
+                                    "Theme Manager bulunamadı veya paket görünür değil."
+                                }
                             }.onFailure {
                                 status = "Theme Manager tarama hatası: ${it.message}"
                             }
@@ -144,7 +154,9 @@ private fun DiagnosticsScreen(onShareReport: (File) -> Unit) {
                 InfoCard("MTZ Dosyası") {
                     MtzContent(mtzInfo)
                     Spacer(Modifier.height(12.dp))
-                    OutlinedButton(enabled = !isBusy, onClick = { mtzPicker.launch(arrayOf("*/*")) }) { Text("MTZ Seç") }
+                    OutlinedButton(enabled = !isBusy, onClick = { mtzPicker.launch(arrayOf("*/*")) }) {
+                        Text("MTZ Seç")
+                    }
                 }
             }
             item {
@@ -182,6 +194,40 @@ private fun DiagnosticsScreen(onShareReport: (File) -> Unit) {
                 }
             }
             item {
+                InfoCard("ThemeService Binder Probe") {
+                    Text(
+                        "Bu test ThemeService'e yalnızca bağlanır, Binder kimliğini ve interface descriptor bilgisini okur, sonra bağlantıyı kapatır. Hiçbir Binder metodu çağrılmaz ve tema uygulanmaz.",
+                        style = MaterialTheme.typography.bodyMedium
+                    )
+                    Spacer(Modifier.height(12.dp))
+                    Button(
+                        enabled = !isBusy && themeManagerInfo?.installed == true,
+                        onClick = {
+                            scope.launch {
+                                isBusy = true
+                                status = "ThemeService Binder bağlantısı test ediliyor…"
+                                runCatching { ThemeServiceProbe.probe(context) }
+                                    .onSuccess { result ->
+                                        themeServiceProbeResult = result
+                                        status = if (result.connected) {
+                                            "ThemeService bağlantısı başarılı: ${result.interfaceDescriptor ?: "descriptor alınamadı"}"
+                                        } else {
+                                            "ThemeService bağlantısı kurulamadı: ${result.error ?: "bilinmeyen neden"}"
+                                        }
+                                    }
+                                    .onFailure {
+                                        status = "ThemeService Probe hatası: ${it.message}"
+                                    }
+                                isBusy = false
+                            }
+                        }
+                    ) { Text("ThemeService Binder Probe") }
+
+                    Spacer(Modifier.height(12.dp))
+                    ThemeServiceProbeContent(themeServiceProbeResult)
+                }
+            }
+            item {
                 InfoCard("Tanılama") {
                     Text(status, style = MaterialTheme.typography.bodyMedium)
                     if (isBusy) {
@@ -202,7 +248,8 @@ private fun DiagnosticsScreen(onShareReport: (File) -> Unit) {
                                         deviceInfo = deviceInfo,
                                         themeManagerInfo = managerInfo,
                                         mtzInfo = mtzInfo,
-                                        intentProbeResults = probeResults
+                                        intentProbeResults = probeResults,
+                                        themeServiceProbeResult = themeServiceProbeResult
                                     )
                                 }
                             }.onSuccess {
@@ -217,13 +264,24 @@ private fun DiagnosticsScreen(onShareReport: (File) -> Unit) {
                 }
             }
             themeManagerInfo?.components?.takeIf { it.isNotEmpty() }?.let { components ->
-                item { Text("Theme Manager Bileşenleri (${components.size})", style = MaterialTheme.typography.titleMedium) }
+                item {
+                    Text(
+                        "Theme Manager Bileşenleri (${components.size})",
+                        style = MaterialTheme.typography.titleMedium
+                    )
+                }
                 items(components) { component ->
-                    Card(modifier = Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)) {
+                    Card(
+                        modifier = Modifier.fillMaxWidth(),
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant)
+                    ) {
                         Column(Modifier.padding(12.dp)) {
                             Text(component.type.uppercase(), style = MaterialTheme.typography.labelSmall)
                             Text(component.name, fontFamily = FontFamily.Monospace)
-                            Text("exported=${component.exported} • permission=${component.permission ?: "none"}", style = MaterialTheme.typography.bodySmall)
+                            Text(
+                                "exported=${component.exported} • permission=${component.permission ?: "none"}",
+                                style = MaterialTheme.typography.bodySmall
+                            )
                         }
                     }
                 }
@@ -248,6 +306,35 @@ private fun IntentProbeContent(results: List<IntentProbeResult>) {
             }
         }
         Spacer(Modifier.height(8.dp))
+    }
+}
+
+@Composable
+private fun ThemeServiceProbeContent(result: ThemeServiceProbeResult?) {
+    if (result == null) {
+        Text("Henüz çalıştırılmadı.", style = MaterialTheme.typography.bodySmall)
+        return
+    }
+    KeyValue("Connected", result.connected.toString())
+    KeyValue("Bind requested", result.bindRequested.toString())
+    Text("Component\n${result.componentName}", style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace)
+    Spacer(Modifier.height(6.dp))
+    Text(
+        "Interface descriptor\n${result.interfaceDescriptor ?: "bilinmiyor"}",
+        style = MaterialTheme.typography.bodySmall,
+        fontFamily = FontFamily.Monospace
+    )
+    Spacer(Modifier.height(6.dp))
+    Text(
+        "Binder class\n${result.binderClass ?: "bilinmiyor"}",
+        style = MaterialTheme.typography.bodySmall,
+        fontFamily = FontFamily.Monospace
+    )
+    KeyValue("Binder alive", result.binderAlive?.toString() ?: "bilinmiyor")
+    KeyValue("Ping", result.pingBinder?.toString() ?: "bilinmiyor")
+    result.error?.let {
+        Spacer(Modifier.height(8.dp))
+        Text(it, color = MaterialTheme.colorScheme.error)
     }
 }
 
