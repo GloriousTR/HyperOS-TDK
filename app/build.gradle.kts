@@ -11,8 +11,8 @@ android {
         applicationId = "com.glorious.hyperostdk"
         minSdk = 26
         targetSdk = 36
-        versionCode = 5
-        versionName = "0.1.4"
+        versionCode = 6
+        versionName = "0.2.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -53,4 +53,7 @@ dependencies {
     debugImplementation("androidx.compose.ui:ui-tooling")
 
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
+
+    // Supplied by LSPosed at runtime; do not package the framework API into the APK.
+    compileOnly("io.github.libxposed:api:102.0.0")
 }
