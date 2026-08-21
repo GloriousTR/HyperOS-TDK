@@ -54,7 +54,7 @@ private val privilegedImportScope = CoroutineScope(SupervisorJob() + Dispatchers
 class PrivilegedThemeActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        DiagnosticsSessionClient.append(this, "NAVIGATION", "Privileged Theme Engine açıldı • build33 strict local apply")
+        DiagnosticsSessionClient.append(this, "NAVIGATION", "Privileged Theme Engine açıldı • build34 crash diagnostics")
         setContent {
             HyperOSTDKTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
@@ -116,10 +116,10 @@ private fun PrivilegedThemeScreen() {
             .padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        Text("HyperOS TDK • v${BuildConfig.VERSION_NAME} • build 33", style = MaterialTheme.typography.headlineSmall)
+        Text("HyperOS TDK • v${BuildConfig.VERSION_NAME} • build 34", style = MaterialTheme.typography.headlineSmall)
         Text("Strict Local Theme Apply", style = MaterialTheme.typography.titleLarge)
         Text(
-            "Build 33 yerel tema metadata'sını daha sıkı Theme Manager uyumluluğuna getirir. Bu ROM'da direct-apply activity yoksa version, price, adapter ve preview metadata alanları düzeltilerek aynı local resource tekrar açılır.",
+            "Build 34, Build 33 metadata davranışını değiştirmez. Tema detay ekranı çökerse gerçek Theme Manager crash buffer, exit-info ve FATAL exception penceresi otomatik olarak Live Diagnostics'e eklenir.",
             style = MaterialTheme.typography.bodyMedium
         )
 
@@ -227,7 +227,7 @@ private fun PrivilegedThemeScreen() {
 
         Spacer(Modifier.height(4.dp))
         Text(
-            "Build 33 testi: local resource oluşturulduktan sonra yalnız HyperOS-TDK'nin ürettiği metadata düzeltilir ve aynı localId yeniden açılır. Rights/trial kontrollerine müdahale edilmez.",
+            "Build 34 diagnostik testi: metadata Build 33 ile aynıdır. Amaç Theme Manager çöküşünün gerçek Java/native exception veya exit reason bilgisini yakalamaktır. Rights/trial kontrollerine müdahale edilmez.",
             style = MaterialTheme.typography.bodySmall
         )
     }
@@ -238,7 +238,7 @@ private fun PrivilegedThemeScreen() {
             title = { Text("Strict Local Theme Apply") },
             text = {
                 Text(
-                    "Seçili MTZ Theme Manager yerel resource alanına hazırlanacak. Bu ROM direct-apply activity sunmuyorsa metadata strict uyumluluk değerleriyle yeniden yazılıp aynı tema detay ekranı tekrar açılacak. Devam edilsin mi?"
+                    "Seçili MTZ aynı strict local-resource akışıyla açılacak. Tema uygulaması çökerse yaklaşık 4-5 saniye sonra crash buffer ve process exit bilgileri Live Diagnostics'e kaydedilecek. Devam edilsin mi?"
                 )
             },
             confirmButton = {
@@ -248,11 +248,11 @@ private fun PrivilegedThemeScreen() {
                         val selected = selectedMtz ?: return@TextButton
                         val appContext = context.applicationContext
                         busy = true
-                        status = "Strict Local Theme Apply hazırlanıyor…"
+                        status = "Strict Local Theme Apply + crash diagnostics hazırlanıyor…"
                         DiagnosticsSessionClient.append(
                             appContext,
                             "PRIVILEGED_IMPORT_SCOPE",
-                            "processScope=true • applyMode=strict-local • build=33"
+                            "processScope=true • applyMode=strict-local-crash-diag • build=34"
                         )
                         privilegedImportScope.launch {
                             runCatching {
@@ -265,13 +265,13 @@ private fun PrivilegedThemeScreen() {
                                 DiagnosticsSessionClient.append(
                                     appContext,
                                     "DIRECT_APPLY_COMPLETED",
-                                    "route=${result.route} • bytes=${result.snapshotBytes} • sha1=${result.sha1} • component=${result.component} • fallbackLocalId=${result.fallbackLocalId} • build=33"
+                                    "route=${result.route} • bytes=${result.snapshotBytes} • sha1=${result.sha1} • component=${result.component} • fallbackLocalId=${result.fallbackLocalId} • build=34"
                                 )
                                 status = when (result.route) {
                                     DirectThemeApplyEngine.Route.DIRECT_COMPONENT ->
                                         "Direct Apply çağrısı gönderildi: ${result.component}. Tema sonucunu kontrol edin."
                                     DirectThemeApplyEngine.Route.LOCAL_RESOURCE_FALLBACK ->
-                                        "Strict Local Resource akışı tamamlandı. localId=${result.fallbackLocalId}. Tema ekranı kapanırsa Live Diagnostics kaydını paylaşın."
+                                        "Strict Local Resource diagnostik akışı tamamlandı. localId=${result.fallbackLocalId}. Live Diagnostics kaydını paylaşın."
                                 }
                             }.onFailure { error ->
                                 DiagnosticsSessionClient.append(
