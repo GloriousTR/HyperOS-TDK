@@ -41,6 +41,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import com.glorious.hyperostdk.privileged.PrivilegedThemeEngine
 import com.glorious.hyperostdk.privileged.ShizukuBridge
+import com.glorious.hyperostdk.privileged.ThemeKitCompatInstaller
 import com.glorious.hyperostdk.ui.theme.HyperOSTDKTheme
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -252,7 +253,7 @@ private fun PrivilegedThemeScreen() {
                             busy = true
                             status = "MTZ hazırlanıyor ve Theme Manager yerel resource alanına aktarılıyor…"
                             runCatching {
-                                PrivilegedThemeEngine.installAndOpen(
+                                ThemeKitCompatInstaller.installAndOpen(
                                     context = context,
                                     displayName = selected.displayName,
                                     sourceUri = selected.uri,
