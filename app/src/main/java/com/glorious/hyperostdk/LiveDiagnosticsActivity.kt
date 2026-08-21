@@ -131,6 +131,14 @@ private data class HookRuntimeStatus(
     enum class State { READY, WAITING, STALE }
 }
 
+private data class LocalApplyDiagnosis(
+    val state: State,
+    val title: String,
+    val message: String
+) {
+    enum class State { WAITING, PARTIAL, ROOT_CAUSE_IDENTIFIED }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun LiveDiagnosticsScreen(
@@ -149,6 +157,15 @@ private fun LiveDiagnosticsScreen(
             )
         )
     }
+    var localApplyDiagnosis by remember {
+        mutableStateOf(
+            LocalApplyDiagnosis(
+                LocalApplyDiagnosis.State.WAITING,
+                "Kanıt bekleniyor",
+                "Yerel MTZ uygulama zinciri henüz gözlenmedi."
+            )
+        )
+    }
 
     LaunchedEffect(Unit) {
         withContext(Dispatchers.IO) {
@@ -163,7 +180,9 @@ private fun LiveDiagnosticsScreen(
             } else {
                 "Tanılama oturumu okunamadı; yeniden deneniyor…"
             }
-            hookRuntimeStatus = evaluateHookRuntime(snapshot?.text.orEmpty())
+            val text = snapshot?.text.orEmpty()
+            hookRuntimeStatus = evaluateHookRuntime(text)
+            localApplyDiagnosis = evaluateLocalApplyDiagnosis(text)
             delay(750)
         }
     }
@@ -232,6 +251,25 @@ private fun LiveDiagnosticsScreen(
             }
 
             item {
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text("Yerel MTZ Uygulama Teşhisi", style = MaterialTheme.typography.titleMedium)
+                        Text(localApplyDiagnosis.title, style = MaterialTheme.typography.labelLarge)
+                        Text(localApplyDiagnosis.message, style = MaterialTheme.typography.bodyMedium)
+                        if (localApplyDiagnosis.state == LocalApplyDiagnosis.State.ROOT_CAUSE_IDENTIFIED) {
+                            Text(
+                                "Salt-okunur teşhis: HyperOS TDK DRM sonucunu, productId değerini, entitlement durumunu veya rights dosyalarını değiştirmez.",
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                        }
+                    }
+                }
+            }
+
+            item {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(10.dp)
@@ -252,7 +290,9 @@ private fun LiveDiagnosticsScreen(
                             runCatching { DiagnosticsSessionClient.clearAndRestart(context) }
                                 .onSuccess {
                                     snapshot = it
-                                    hookRuntimeStatus = evaluateHookRuntime(it?.text.orEmpty())
+                                    val text = it?.text.orEmpty()
+                                    hookRuntimeStatus = evaluateHookRuntime(text)
+                                    localApplyDiagnosis = evaluateLocalApplyDiagnosis(text)
                                     status = "Kayıt temizlendi; yeni oturum otomatik başladı."
                                 }
                                 .onFailure { status = "Kayıt temizlenemedi: ${it.message}" }
@@ -335,7 +375,7 @@ private fun evaluateHookRuntime(text: String): HookRuntimeStatus {
         hasExactRuntimeVersion && hasRightsPairHook && hasRightsMapHook && hasDrmHook && hasDownloadRightsHook ->
             HookRuntimeStatus(
                 HookRuntimeStatus.State.READY,
-                "Enjekte edilen modül v${BuildConfig.VERSION_NAME} ile eşleşiyor. DRM ve download-rights hook seti aktif."
+                "Enjekte edilen modül v${BuildConfig.VERSION_NAME} ile eşleşiyor. DRM ve response diagnostics hook seti aktif."
             )
         hasThemeManagerEvents && !hasExactRuntimeVersion -> HookRuntimeStatus(
             HookRuntimeStatus.State.STALE,
@@ -343,13 +383,68 @@ private fun evaluateHookRuntime(text: String): HookRuntimeStatus {
         )
         hasExactRuntimeVersion -> HookRuntimeStatus(
             HookRuntimeStatus.State.STALE,
-            "Doğru modül sürümü enjekte edildi ancak beklenen download-rights hook seti eksik. Theme Manager'ı yeniden başlatıp tekrar kontrol edin."
+            "Doğru modül sürümü enjekte edildi ancak beklenen diagnostics hook seti eksik. Theme Manager'ı yeniden başlatıp tekrar kontrol edin."
         )
         else -> HookRuntimeStatus(
             HookRuntimeStatus.State.WAITING,
             "Theme Manager hook bağlantısı bekleniyor. Theme Manager açıldığında durum otomatik güncellenecek."
         )
     }
+}
+
+private fun evaluateLocalApplyDiagnosis(text: String): LocalApplyDiagnosis {
+    if (text.isBlank()) {
+        return LocalApplyDiagnosis(
+            LocalApplyDiagnosis.State.WAITING,
+            "Kanıt bekleniyor",
+            "Yerel MTZ uygulama zinciri henüz gözlenmedi."
+        )
+    }
+
+    val hasMissingRightsFile = text.contains("DRM_ERROR_RIGHT_FILE_NOT_EXISTS")
+    val hasNullProductId = text.contains("productId=null")
+    val requestParameterLines = text.lineSequence()
+        .filter { it.contains("REQUEST_MAP_SCHEMA") && it.contains("field=mParameters") }
+        .toList()
+    val hasRequestSchema = requestParameterLines.isNotEmpty()
+    val requestContainsProductId = requestParameterLines.any { it.contains("productId=") }
+    val hasParameter413 = text.contains("apiCode=413") && text.contains("resultCode=413")
+    val hasParameterValidationMessage = text.contains("参数验证错误")
+
+    if (
+        hasMissingRightsFile &&
+        hasNullProductId &&
+        hasRequestSchema &&
+        !requestContainsProductId &&
+        hasParameter413 &&
+        hasParameterValidationMessage
+    ) {
+        return LocalApplyDiagnosis(
+            LocalApplyDiagnosis.State.ROOT_CAUSE_IDENTIFIED,
+            "Kök neden zinciri gözlendi",
+            "Theme Manager yerel rights dosyasını bulamadığı için DRM_SUCCESS durumuna ulaşmıyor. Resource productId taşımıyor; oluşturulan POST/FORM isteğinde productId parametresi bulunmuyor. Servis apiCode=413 ile ‘parametre doğrulama hatası’ döndürüyor. APK/DEX akışıyla birlikte bu, yerel apply yerine online rights yoluna geçildiğini doğruluyor."
+        )
+    }
+
+    if (hasMissingRightsFile || hasNullProductId || hasRequestSchema || hasParameter413) {
+        val evidence = buildList {
+            if (hasMissingRightsFile) add("rights dosyası yok")
+            if (hasNullProductId) add("productId null")
+            if (hasRequestSchema) add(if (requestContainsProductId) "request productId içeriyor" else "request productId içermiyor")
+            if (hasParameter413) add("servis kodu 413")
+        }
+        return LocalApplyDiagnosis(
+            LocalApplyDiagnosis.State.PARTIAL,
+            "Kısmi kanıt: ${evidence.joinToString(" • ")}",
+            "Teşhisin tamamlanması için aynı oturumda DRM sonucu, request şeması ve servis cevabının birlikte görülmesi gerekiyor."
+        )
+    }
+
+    return LocalApplyDiagnosis(
+        LocalApplyDiagnosis.State.WAITING,
+        "Apply denemesi bekleniyor",
+        "Bir yerel MTZ için Uygula işlemi yapıldığında DRM, request şeması ve servis cevabı otomatik değerlendirilecek."
+    )
 }
 
 private fun Sequence<String>.takeLastLines(maxLines: Int): List<String> {
