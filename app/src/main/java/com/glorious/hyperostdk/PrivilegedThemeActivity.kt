@@ -39,10 +39,9 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
+import com.glorious.hyperostdk.privileged.HyperThemeCompatEngine
 import com.glorious.hyperostdk.privileged.PrivilegedThemeEngine
 import com.glorious.hyperostdk.privileged.ShizukuBridge
-import com.glorious.hyperostdk.privileged.ThemeKitCompatInstaller
-import com.glorious.hyperostdk.privileged.ThemeManagerCrashProbe
 import com.glorious.hyperostdk.ui.theme.HyperOSTDKTheme
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -50,21 +49,12 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
-/**
- * Import/apply must outlive the Compose screen. Opening Xiaomi Theme Manager can remove
- * PrivilegedThemeScreen from composition on some HyperOS builds; a rememberCoroutineScope
- * is therefore only suitable for in-screen capability work, never for the committed import.
- */
 private val privilegedImportScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
 class PrivilegedThemeActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        DiagnosticsSessionClient.append(
-            this,
-            "NAVIGATION",
-            "Privileged Theme Engine açıldı"
-        )
+        DiagnosticsSessionClient.append(this, "NAVIGATION", "Privileged Theme Engine açıldı • build30 HyperTheme reference mode")
         setContent {
             HyperOSTDKTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
@@ -91,7 +81,7 @@ private fun PrivilegedThemeScreen() {
         mutableStateOf("Shevery/Shizuku durumunu kontrol edin, ardından Capability Test çalıştırın.")
     }
     var busy by remember { mutableStateOf(false) }
-    var showImportConfirmation by remember { mutableStateOf(false) }
+    var showApplyConfirmation by remember { mutableStateOf(false) }
 
     LaunchedEffect(Unit) {
         while (true) {
@@ -126,10 +116,10 @@ private fun PrivilegedThemeScreen() {
             .padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        Text("HyperOS TDK • v${BuildConfig.VERSION_NAME}", style = MaterialTheme.typography.headlineSmall)
-        Text("Privileged Local Theme Engine", style = MaterialTheme.typography.titleLarge)
+        Text("HyperOS TDK • v${BuildConfig.VERSION_NAME} • build 30", style = MaterialTheme.typography.headlineSmall)
+        Text("HyperTheme Direct Apply Test", style = MaterialTheme.typography.titleLarge)
         Text(
-            "0.4.1 deneysel motoru, mevcut native/LSPosed import sistemini değiştirmeden Shevery uyumlu Shizuku UserService ile Theme Manager'ın yerel resource alanını hazırlar.",
+            "Build 30, HyperTheme 1.1.17 (38) içindeki Global-ROM direct apply yolunu izole eder: seçili MTZ snapshot.mtz olarak Theme Manager alanına kopyalanır ve ApplyThemeForScreenshot doğrudan çağrılır. ThemeDetailActivity kullanılmaz.",
             style = MaterialTheme.typography.bodyMedium
         )
 
@@ -157,12 +147,8 @@ private fun PrivilegedThemeScreen() {
                 enabled = !busy,
                 onClick = {
                     ShizukuBridge.requestPermission()
-                        .onSuccess {
-                            status = "Shevery/Shizuku yetki isteği gönderildi. İzin verdikten sonra durum otomatik güncellenecek."
-                        }
-                        .onFailure { error ->
-                            status = "Yetki isteği başarısız: ${error.message}"
-                        }
+                        .onSuccess { status = "Shevery/Shizuku yetki isteği gönderildi." }
+                        .onFailure { error -> status = "Yetki isteği başarısız: ${error.message}" }
                 }
             ) {
                 Text("1. Shevery / Shizuku Yetkisi Ver")
@@ -198,7 +184,7 @@ private fun PrivilegedThemeScreen() {
                     verticalArrangement = Arrangement.spacedBy(5.dp)
                 ) {
                     Text(
-                        if (report.ready) "Local Import: HAZIR" else "Local Import: HAZIR DEĞİL",
+                        if (report.ready) "Direct Apply: HAZIR" else "Direct Apply: HAZIR DEĞİL",
                         style = MaterialTheme.typography.titleMedium
                     )
                     Text(report.detail, style = MaterialTheme.typography.bodySmall)
@@ -230,9 +216,9 @@ private fun PrivilegedThemeScreen() {
         Button(
             modifier = Modifier.fillMaxWidth(),
             enabled = !busy && selectedMtz != null && capability?.ready == true,
-            onClick = { showImportConfirmation = true }
+            onClick = { showApplyConfirmation = true }
         ) {
-            Text(if (busy) "İşlem sürüyor…" else "4. Privileged Local Import")
+            Text(if (busy) "İşlem sürüyor…" else "4. HyperTheme Direct Apply")
         }
 
         Card(modifier = Modifier.fillMaxWidth()) {
@@ -241,69 +227,65 @@ private fun PrivilegedThemeScreen() {
 
         Spacer(Modifier.height(4.dp))
         Text(
-            "Build 29 tanılama modu: Theme Manager otomatik Apply tetiklenmez; detay ekranı kararlı kalırsa Uygula düğmesine elle basın. Uygulama kapanırsa crash/exit bilgisi otomatik kaydedilir.",
+            "Build 30 izolasyon testi: ThemeKit LocalResource/ThemeDetailActivity açılmaz. HyperTheme'den çıkarılan snapshot + ApplyThemeForScreenshot yolu tek başına denenir. Rights/trial kontrollerine müdahale edilmez.",
             style = MaterialTheme.typography.bodySmall
         )
     }
 
-    if (showImportConfirmation) {
+    if (showApplyConfirmation) {
         AlertDialog(
-            onDismissRequest = { showImportConfirmation = false },
-            title = { Text("Privileged Local Import") },
+            onDismissRequest = { showApplyConfirmation = false },
+            title = { Text("HyperTheme Direct Apply") },
             text = {
                 Text(
-                    "Seçili MTZ ThemeKit-benzeri .mrc/.mrm resource ağacına dönüştürülecek ve yeni localId dosyaları Shevery/Shizuku üzerinden Theme Manager .data alanına yazılacak. Build 29'da otomatik Apply kapalıdır; Theme Manager detay ekranı açık kalırsa Uygula'ya elle dokunun."
+                    "Seçili MTZ, Shevery/Shizuku üzerinden Theme Manager'ın snapshot/snapshot.mtz dosyasına kopyalanacak. Ardından Xiaomi'nin ApplyThemeForScreenshot Activity'si HyperTheme 1.1.17 ile aynı extra değerleri kullanılarak çağrılacak. Devam edilsin mi?"
                 )
             },
             confirmButton = {
                 TextButton(
                     onClick = {
-                        showImportConfirmation = false
+                        showApplyConfirmation = false
                         val selected = selectedMtz ?: return@TextButton
                         val appContext = context.applicationContext
                         busy = true
-                        status = "MTZ hazırlanıyor; Theme Manager crash probe ve manuel Apply izolasyon testi çalışıyor…"
+                        status = "HyperTheme reference apply hazırlanıyor…"
                         DiagnosticsSessionClient.append(
                             appContext,
                             "PRIVILEGED_IMPORT_SCOPE",
-                            "processScope=true • applyMode=manual-diagnostic • crashProbe=true"
+                            "processScope=true • applyMode=hypertheme-direct • build=30"
                         )
                         privilegedImportScope.launch {
-                            ThemeManagerCrashProbe.captureWindow(appContext)
-                        }
-                        privilegedImportScope.launch {
                             runCatching {
-                                ThemeKitCompatInstaller.installAndOpen(
+                                HyperThemeCompatEngine.apply(
                                     context = appContext,
                                     displayName = selected.displayName,
-                                    sourceUri = selected.uri,
-                                    requestAutomaticApply = false
+                                    sourceUri = selected.uri
                                 )
                             }.onSuccess { result ->
                                 DiagnosticsSessionClient.append(
                                     appContext,
-                                    "PRIVILEGED_IMPORT_COMPLETED",
-                                    "localId=${result.localId} • subResources=${result.subResourceCount} • applyTriggered=${result.applyTriggered} • processScope=true • applyMode=manual-diagnostic"
+                                    "HYPERTHEME_REFERENCE_APPLY_COMPLETED",
+                                    "bytes=${result.snapshotBytes} • sha1=${result.sha1} • build=30"
                                 )
-                                status = "${result.message} localId=${result.localId} • subResources=${result.subResourceCount}"
+                                status = "HyperTheme Direct Apply çağrısı gönderildi. snapshot=${result.snapshotBytes} bayt. Tema uygulanmışsa sonucu kontrol edin; uygulanmadıysa Live Diagnostics'i paylaşın."
                             }.onFailure { error ->
                                 DiagnosticsSessionClient.append(
                                     appContext,
-                                    "PRIVILEGED_IMPORT_PROCESS_SCOPE_FAILED",
+                                    "HYPERTHEME_REFERENCE_APPLY_FAILED",
                                     "${error.javaClass.simpleName}: ${error.message}",
                                     level = "ERROR"
                                 )
-                                status = "Privileged import başarısız: ${error.javaClass.simpleName}: ${error.message}. Live Diagnostics kaydını paylaşın."
+                                status = "HyperTheme Direct Apply başarısız: ${error.javaClass.simpleName}: ${error.message}. Live Diagnostics kaydını paylaşın."
                             }
                             busy = false
                         }
                     }
                 ) {
-                    Text("Hazırla ve Aç")
+                    Text("Snapshot'a Yaz ve Uygula")
                 }
             },
             dismissButton = {
-                TextButton(onClick = { showImportConfirmation = false }) {
+                TextButton(onClick = { showApplyConfirmation = false }) {
                     Text("İptal")
                 }
             }
