@@ -19,7 +19,11 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.statusBarsPadding
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
@@ -171,7 +175,7 @@ private fun ControlledImportScreen(
     var activeRequestId by remember { mutableStateOf<String?>(null) }
     var status by remember {
         mutableStateOf(
-            "v0.2.5, Theme Manager'ın gerçek start / complete / fail metodlarını doğrudan izler ve sonucu bu ekranda gösterir."
+            "v${BuildConfig.VERSION_NAME} hazır. Theme Manager import yaşam döngüsü doğrudan izlenir ve sonuç bu ekranda gösterilir."
         )
     }
 
@@ -230,6 +234,9 @@ private fun ControlledImportScreen(
     Column(
         modifier = Modifier
             .fillMaxSize()
+            .statusBarsPadding()
+            .navigationBarsPadding()
+            .verticalScroll(rememberScrollState())
             .padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
@@ -238,7 +245,7 @@ private fun ControlledImportScreen(
             style = MaterialTheme.typography.headlineSmall
         )
         Text(
-            text = "Controlled MTZ Import • Direct Result",
+            text = "Theme Tools • MTZ Import",
             style = MaterialTheme.typography.titleLarge
         )
 
@@ -248,11 +255,11 @@ private fun ControlledImportScreen(
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 Text(
-                    text = "v0.2.4 cihaz logunda provider IPC, 48 MB MTZ staging ve ThemeImportManager.v(...) kuyruğu başarıyla doğrulandı.",
+                    text = "Çalışan v0.2.5 import motoru korunmuştur. v0.3.0 bu özelliği HyperOS TDK içindeki Theme Tools bölümüne taşır.",
                     style = MaterialTheme.typography.bodyLarge
                 )
                 Text(
-                    text = "v0.2.5 sonuç broadcast'ine güvenmez. Theme Manager'ın kendi s(Resource)=start, t(Resource,String)=complete ve r(Resource,String)=fail metodlarını LSPosed ile doğrudan izler.",
+                    text = "Theme Manager'ın start / complete / fail yaşam döngüsü doğrudan izlenir ve terminal sonuç uygulamaya geri taşınır.",
                     style = MaterialTheme.typography.bodyMedium
                 )
                 Text(
@@ -320,7 +327,7 @@ private fun ControlledImportScreen(
             modifier = Modifier.fillMaxWidth(),
             onClick = onOpenDiagnostics
         ) {
-            Text("Eski Tanılama Araçlarını Aç")
+            Text("Diagnostics'i Aç")
         }
     }
 
