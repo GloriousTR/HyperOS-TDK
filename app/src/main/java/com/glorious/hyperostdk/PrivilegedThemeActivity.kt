@@ -42,7 +42,6 @@ import androidx.compose.ui.unit.dp
 import com.glorious.hyperostdk.privileged.DirectThemeApplyEngine
 import com.glorious.hyperostdk.privileged.PrivilegedThemeEngine
 import com.glorious.hyperostdk.privileged.ShizukuBridge
-import com.glorious.hyperostdk.privileged.ThemeManagerCrashProbe
 import com.glorious.hyperostdk.ui.theme.HyperOSTDKTheme
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -55,7 +54,7 @@ private val privilegedImportScope = CoroutineScope(SupervisorJob() + Dispatchers
 class PrivilegedThemeActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        DiagnosticsSessionClient.append(this, "NAVIGATION", "Privileged Theme Engine açıldı • build32 adaptive direct apply")
+        DiagnosticsSessionClient.append(this, "NAVIGATION", "Privileged Theme Engine açıldı • build33 strict local apply")
         setContent {
             HyperOSTDKTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
@@ -117,10 +116,10 @@ private fun PrivilegedThemeScreen() {
             .padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        Text("HyperOS TDK • v${BuildConfig.VERSION_NAME} • build 32", style = MaterialTheme.typography.headlineSmall)
-        Text("Direct Theme Apply", style = MaterialTheme.typography.titleLarge)
+        Text("HyperOS TDK • v${BuildConfig.VERSION_NAME} • build 33", style = MaterialTheme.typography.headlineSmall)
+        Text("Strict Local Theme Apply", style = MaterialTheme.typography.titleLarge)
         Text(
-            "Build 32 önce cihazdaki Theme Manager direct-apply componentlerini dener; uygun component yoksa yerel resource fallback akışına geçer. Fallback artık Activity context ile açılır.",
+            "Build 33 yerel tema metadata'sını daha sıkı Theme Manager uyumluluğuna getirir. Bu ROM'da direct-apply activity yoksa version, price, adapter ve preview metadata alanları düzeltilerek aynı local resource tekrar açılır.",
             style = MaterialTheme.typography.bodyMedium
         )
 
@@ -219,7 +218,7 @@ private fun PrivilegedThemeScreen() {
             enabled = !busy && selectedMtz != null && capability?.ready == true,
             onClick = { showApplyConfirmation = true }
         ) {
-            Text(if (busy) "İşlem sürüyor…" else "4. Direct Theme Apply")
+            Text(if (busy) "İşlem sürüyor…" else "4. Strict Local Theme Apply")
         }
 
         Card(modifier = Modifier.fillMaxWidth()) {
@@ -228,7 +227,7 @@ private fun PrivilegedThemeScreen() {
 
         Spacer(Modifier.height(4.dp))
         Text(
-            "Build 32 adaptif test: önce Theme Manager içindeki direct-apply component'leri denenir. Bu ROM'da desteklenmiyorsa Local Resource fallback çalıştırılır ve crash/exit kayıtları Live Diagnostics'e eklenir. Rights/trial kontrollerine müdahale edilmez.",
+            "Build 33 testi: local resource oluşturulduktan sonra yalnız HyperOS-TDK'nin ürettiği metadata düzeltilir ve aynı localId yeniden açılır. Rights/trial kontrollerine müdahale edilmez.",
             style = MaterialTheme.typography.bodySmall
         )
     }
@@ -236,10 +235,10 @@ private fun PrivilegedThemeScreen() {
     if (showApplyConfirmation) {
         AlertDialog(
             onDismissRequest = { showApplyConfirmation = false },
-            title = { Text("Direct Theme Apply") },
+            title = { Text("Strict Local Theme Apply") },
             text = {
                 Text(
-                    "Seçili MTZ Theme Manager snapshot alanına hazırlanacak. HyperOS TDK, cihazdaki Theme Manager sürümünde kullanılabilen direct-apply activity'lerini dinamik olarak deneyecek; direct yol desteklenmiyorsa Local Resource fallback'e geçecek. Devam edilsin mi?"
+                    "Seçili MTZ Theme Manager yerel resource alanına hazırlanacak. Bu ROM direct-apply activity sunmuyorsa metadata strict uyumluluk değerleriyle yeniden yazılıp aynı tema detay ekranı tekrar açılacak. Devam edilsin mi?"
                 )
             },
             confirmButton = {
@@ -249,15 +248,12 @@ private fun PrivilegedThemeScreen() {
                         val selected = selectedMtz ?: return@TextButton
                         val appContext = context.applicationContext
                         busy = true
-                        status = "Direct Theme Apply hazırlanıyor…"
+                        status = "Strict Local Theme Apply hazırlanıyor…"
                         DiagnosticsSessionClient.append(
                             appContext,
                             "PRIVILEGED_IMPORT_SCOPE",
-                            "processScope=true • applyMode=adaptive-direct • fallback=local-resource • build=32"
+                            "processScope=true • applyMode=strict-local • build=33"
                         )
-                        privilegedImportScope.launch {
-                            ThemeManagerCrashProbe.captureWindow(appContext)
-                        }
                         privilegedImportScope.launch {
                             runCatching {
                                 DirectThemeApplyEngine.apply(
@@ -269,13 +265,13 @@ private fun PrivilegedThemeScreen() {
                                 DiagnosticsSessionClient.append(
                                     appContext,
                                     "DIRECT_APPLY_COMPLETED",
-                                    "route=${result.route} • bytes=${result.snapshotBytes} • sha1=${result.sha1} • component=${result.component} • fallbackLocalId=${result.fallbackLocalId} • build=32"
+                                    "route=${result.route} • bytes=${result.snapshotBytes} • sha1=${result.sha1} • component=${result.component} • fallbackLocalId=${result.fallbackLocalId} • build=33"
                                 )
                                 status = when (result.route) {
                                     DirectThemeApplyEngine.Route.DIRECT_COMPONENT ->
                                         "Direct Apply çağrısı gönderildi: ${result.component}. Tema sonucunu kontrol edin."
                                     DirectThemeApplyEngine.Route.LOCAL_RESOURCE_FALLBACK ->
-                                        "Direct component bu ROM'da bulunamadı; Local Resource fallback açıldı. localId=${result.fallbackLocalId}. Live Diagnostics kaydını paylaşın."
+                                        "Strict Local Resource akışı tamamlandı. localId=${result.fallbackLocalId}. Tema ekranı kapanırsa Live Diagnostics kaydını paylaşın."
                                 }
                             }.onFailure { error ->
                                 DiagnosticsSessionClient.append(
@@ -284,7 +280,7 @@ private fun PrivilegedThemeScreen() {
                                     "${error.javaClass.simpleName}: ${error.message}",
                                     level = "ERROR"
                                 )
-                                status = "Direct Theme Apply başarısız: ${error.javaClass.simpleName}: ${error.message}. Live Diagnostics kaydını paylaşın."
+                                status = "Strict Local Theme Apply başarısız: ${error.javaClass.simpleName}: ${error.message}. Live Diagnostics kaydını paylaşın."
                             }
                             busy = false
                         }
