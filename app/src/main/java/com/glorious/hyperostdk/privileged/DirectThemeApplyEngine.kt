@@ -33,10 +33,10 @@ object DirectThemeApplyEngine {
         DiagnosticsSessionClient.append(
             appContext,
             "DIRECT_APPLY_STARTED",
-            "name=$displayName • backend=${capability.state.backend} • uid=${capability.state.serverUid} • build=32"
+            "name=$displayName • backend=${capability.state.backend} • uid=${capability.state.serverUid} • build=33"
         )
 
-        val localDir = appContext.getExternalFilesDir("direct-apply-build32")
+        val localDir = appContext.getExternalFilesDir("direct-apply-build33")
             ?: error("External files directory is unavailable")
         localDir.mkdirs()
         val localMtz = File(localDir, "snapshot-source.mtz")
@@ -100,10 +100,7 @@ object DirectThemeApplyEngine {
         )
 
         for (component in candidates) {
-            val launch = ShizukuBridge.exec(
-                appContext,
-                buildAmStartCommand(component)
-            )
+            val launch = ShizukuBridge.exec(appContext, buildAmStartCommand(component))
             val combined = launch.output.replace('\n', ' ').trim()
             val accepted = launch.success &&
                 !combined.contains("Error type", ignoreCase = true) &&
@@ -137,31 +134,26 @@ object DirectThemeApplyEngine {
         DiagnosticsSessionClient.append(
             appContext,
             "DIRECT_APPLY_COMPONENT_UNAVAILABLE",
-            "No compatible direct-apply activity is exposed by this Theme Manager build; switching to Local Resource fallback.",
+            "No compatible direct-apply activity is exposed by this Theme Manager build; switching to strict Local Resource route.",
             level = "WARN"
         )
 
         DiagnosticsSessionClient.append(
             appContext,
             "DIRECT_APPLY_FALLBACK_CONTEXT",
-            "context=${context.javaClass.name} • applicationContext=${appContext.javaClass.name} • build=32"
+            "context=${context.javaClass.name} • applicationContext=${appContext.javaClass.name} • build=33 • strictMetadata=true"
         )
 
-        // IMPORTANT: preserve the Activity context supplied by the UI for the LocalResource
-        // fallback. Build 31 converted this to applicationContext and ThemeKitCompatInstaller
-        // correctly prepared the resource, but Android rejected startActivity() because the
-        // application context did not carry FLAG_ACTIVITY_NEW_TASK.
-        val fallback = ThemeKitCompatInstaller.installAndOpen(
+        val fallback = StrictLocalThemeRoute.installAndOpen(
             context = context,
             displayName = displayName,
-            sourceUri = sourceUri,
-            requestAutomaticApply = false
+            sourceUri = sourceUri
         )
 
         DiagnosticsSessionClient.append(
             appContext,
             "DIRECT_APPLY_FALLBACK_OPENED",
-            "localId=${fallback.localId} • subResources=${fallback.subResourceCount} • automaticApply=false • build=32"
+            "localId=${fallback.localId} • subResources=${fallback.subResourceCount} • automaticApply=false • strictMetadata=true • build=33"
         )
 
         return ApplyResult(
@@ -176,10 +168,14 @@ object DirectThemeApplyEngine {
     private fun buildCandidates(inventory: String): List<String> {
         val result = LinkedHashSet<String>()
 
-        result += "$THEME_MANAGER_PACKAGE/com.android.thememanager.ApplyThemeForScreenshot"
-        result += "$THEME_MANAGER_PACKAGE/com.android.thememanager.activity.ApplyThemeForScreenshot"
-        result += "$THEME_MANAGER_PACKAGE/com.android.thememanager.activity.ApplyThemeForScreenshotActivity"
-        result += "$THEME_MANAGER_PACKAGE/com.android.thememanager.ApplyThemeForScreenshotActivity"
+        // Only spend time on the direct route if this Theme Manager actually advertises an
+        // apply/screenshot surface. The target ROM has already shown that it does not.
+        if (inventory.contains("ApplyTheme", ignoreCase = true) || inventory.contains("Screenshot", ignoreCase = true)) {
+            result += "$THEME_MANAGER_PACKAGE/com.android.thememanager.ApplyThemeForScreenshot"
+            result += "$THEME_MANAGER_PACKAGE/com.android.thememanager.activity.ApplyThemeForScreenshot"
+            result += "$THEME_MANAGER_PACKAGE/com.android.thememanager.activity.ApplyThemeForScreenshotActivity"
+            result += "$THEME_MANAGER_PACKAGE/com.android.thememanager.ApplyThemeForScreenshotActivity"
+        }
 
         val fullClassRegex = Regex("com\\.android\\.thememanager(?:\\.[A-Za-z0-9_]+)+")
         fullClassRegex.findAll(inventory).forEach { match ->
@@ -230,6 +226,6 @@ object DirectThemeApplyEngine {
 
     private const val THEME_MANAGER_PACKAGE = "com.android.thememanager"
     private const val SNAPSHOT_PATH = "/storage/emulated/0/Android/data/com.android.thememanager/files/snapshot/snapshot.mtz"
-    private const val SNAPSHOT_TMP_PATH = "$SNAPSHOT_PATH.hyperos-tdk-build32.tmp"
+    private const val SNAPSHOT_TMP_PATH = "$SNAPSHOT_PATH.hyperos-tdk-build33.tmp"
     private const val SNAPSHOT_PATH_FOR_INTENT = "/sdcard/Android/data/com.android.thememanager/files/snapshot/snapshot.mtz"
 }
