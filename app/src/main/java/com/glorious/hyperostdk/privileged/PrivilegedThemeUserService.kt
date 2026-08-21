@@ -4,14 +4,10 @@ import android.content.Context
 import android.system.Os
 import androidx.annotation.Keep
 
-class PrivilegedThemeUserService : IPrivilegedThemeService.Stub() {
-    constructor()
-
-    @Keep
-    constructor(context: Context) {
-        @Suppress("UNUSED_VARIABLE")
-        val keepContextConstructor = context.packageName
-    }
+@Keep
+class PrivilegedThemeUserService @JvmOverloads constructor(
+    @Suppress("UNUSED_PARAMETER") context: Context? = null
+) : IPrivilegedThemeService.Stub() {
 
     override fun destroy() {
         System.exit(0)
