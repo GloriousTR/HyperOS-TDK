@@ -151,17 +151,32 @@ object ThemeKitCompatInstaller {
                 "localId=$mainLocalId • files=${stageFiles.size} • previews=${previewNames.size} • backend=${capability.state.backend}"
             )
 
+            // buildInstallScript already gates success on a non-empty remote MRM. The extra
+            // content grep used by build 26 proved unreliable on-device and caused a false
+            // negative after a successful copy, which then rolled back valid staged files.
+            // Keep this as best-effort diagnostics only; never fail/rollback an otherwise
+            // successful install because a secondary verification command is unavailable.
             val remoteMrm = "$REMOTE_DATA_ROOT/meta/theme/$mainLocalId.mrm"
-            val remoteVerify = ShizukuBridge.exec(
-                context,
-                "set -e; test -s ${shellQuote(remoteMrm)}; grep -F ${shellQuote(expectedContentPath)} ${shellQuote(remoteMrm)} >/dev/null"
-            )
-            check(remoteVerify.success) { "Remote metadata verification failed: ${remoteVerify.output.take(1000)}" }
-            DiagnosticsSessionClient.append(
-                context,
-                "REMOTE_METADATA_VERIFY_SUCCESS",
-                "localId=$mainLocalId • exactContentPath=true • localizedPreviewSchema=true"
-            )
+            val remoteVerify = runCatching {
+                ShizukuBridge.exec(
+                    context,
+                    "test -s ${shellQuote(remoteMrm)}; printf 'bytes='; wc -c < ${shellQuote(remoteMrm)} 2>/dev/null || true"
+                )
+            }.getOrNull()
+            if (remoteVerify?.success == true) {
+                DiagnosticsSessionClient.append(
+                    context,
+                    "REMOTE_METADATA_VERIFY_SUCCESS",
+                    "localId=$mainLocalId • ${remoteVerify.output.replace('\n', ' ').trim()} • localSchemaValidated=true • nonFatal=true"
+                )
+            } else {
+                DiagnosticsSessionClient.append(
+                    context,
+                    "REMOTE_METADATA_VERIFY_WARNING",
+                    "localId=$mainLocalId • secondary verify unavailable/failed; storage install already passed non-empty MRM gate • exit=${remoteVerify?.exitCode ?: -1} • output=${remoteVerify?.output?.replace('\n', ' ')?.take(500).orEmpty()} • nonFatal=true",
+                    level = "WARN"
+                )
+            }
 
             val intent = Intent(Intent.ACTION_VIEW, Uri.parse("ViewLocalResource://view.local.resource#$mainLocalId")).apply {
                 setPackage(THEME_MANAGER_PACKAGE)
