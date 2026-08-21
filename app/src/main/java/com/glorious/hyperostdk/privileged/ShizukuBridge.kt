@@ -9,6 +9,7 @@ import android.os.IBinder
 import com.glorious.hyperostdk.BuildConfig
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import rikka.shizuku.Shizuku
@@ -117,50 +118,60 @@ object ShizukuBridge {
             .version(BuildConfig.VERSION_CODE)
             .tag("hyperos-tdk-theme-engine")
 
-        val deferred = CompletableDeferred<IPrivilegedThemeService>()
-        val connection = object : ServiceConnection {
-            override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
-                if (binder == null || !binder.pingBinder()) {
-                    if (!deferred.isCompleted) {
-                        deferred.completeExceptionally(IllegalStateException("Invalid UserService binder"))
+        var lastError: Throwable? = null
+        repeat(USER_SERVICE_BIND_ATTEMPTS) { attempt ->
+            val deferred = CompletableDeferred<IPrivilegedThemeService>()
+            val connection = object : ServiceConnection {
+                override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
+                    if (binder == null || !binder.pingBinder()) {
+                        if (!deferred.isCompleted) {
+                            deferred.completeExceptionally(IllegalStateException("Invalid UserService binder"))
+                        }
+                        return
                     }
-                    return
+                    if (!deferred.isCompleted) {
+                        deferred.complete(IPrivilegedThemeService.Stub.asInterface(binder))
+                    }
                 }
-                if (!deferred.isCompleted) {
-                    deferred.complete(IPrivilegedThemeService.Stub.asInterface(binder))
+
+                override fun onServiceDisconnected(name: ComponentName?) {
+                    if (!deferred.isCompleted) {
+                        deferred.completeExceptionally(IllegalStateException("UserService disconnected before ready"))
+                    }
                 }
             }
 
-            override fun onServiceDisconnected(name: ComponentName?) {
-                if (!deferred.isCompleted) {
-                    deferred.completeExceptionally(IllegalStateException("UserService disconnected before ready"))
-                }
-            }
-        }
-
-        withContext(Dispatchers.Main.immediate) {
-            Shizuku.bindUserService(args, connection)
-        }
-        val service = try {
-            withTimeout(USER_SERVICE_TIMEOUT_MS) { deferred.await() }
-        } catch (error: Throwable) {
-            runCatching {
+            try {
                 withContext(Dispatchers.Main.immediate) {
-                    Shizuku.unbindUserService(args, connection, true)
+                    Shizuku.bindUserService(args, connection)
+                }
+                val service = withTimeout(USER_SERVICE_TIMEOUT_MS) { deferred.await() }
+                return try {
+                    block(service)
+                } finally {
+                    // Keep the UserService process alive between short consecutive calls.
+                    // v0.4.1 originally removed/destroyed it after every exec(), which caused
+                    // capability-test -> import rebinding to race with process teardown.
+                    runCatching {
+                        withContext(Dispatchers.Main.immediate) {
+                            Shizuku.unbindUserService(args, connection, false)
+                        }
+                    }
+                }
+            } catch (error: Throwable) {
+                lastError = error
+                runCatching {
+                    withContext(Dispatchers.Main.immediate) {
+                        Shizuku.unbindUserService(args, connection, false)
+                    }
+                }
+                if (attempt + 1 < USER_SERVICE_BIND_ATTEMPTS) {
+                    delay(USER_SERVICE_RETRY_DELAY_MS)
                 }
             }
-            throw error
         }
 
-        return try {
-            block(service)
-        } finally {
-            runCatching {
-                withContext(Dispatchers.Main.immediate) {
-                    Shizuku.unbindUserService(args, connection, true)
-                }
-            }
-        }
+        throw lastError ?: IllegalStateException("Unable to bind privileged UserService")
     }
 
     private fun parseShellResult(raw: String): ShellResult {
@@ -186,4 +197,6 @@ object ShizukuBridge {
     private const val SHEVERY_PACKAGE = "com.hamondev.shevery"
     private const val OFFICIAL_SHIZUKU_PACKAGE = "moe.shizuku.privileged.api"
     private const val USER_SERVICE_TIMEOUT_MS = 10_000L
+    private const val USER_SERVICE_BIND_ATTEMPTS = 2
+    private const val USER_SERVICE_RETRY_DELAY_MS = 400L
 }
