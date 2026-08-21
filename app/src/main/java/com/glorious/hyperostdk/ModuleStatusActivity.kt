@@ -29,6 +29,7 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -38,6 +39,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
 import com.glorious.hyperostdk.ui.theme.HyperOSTDKTheme
+import kotlinx.coroutines.delay
 import java.util.UUID
 
 private const val TAG = "HyperOS-TDK-App"
@@ -47,6 +49,13 @@ private const val URI_GRANT_REVOKE_DELAY_MS = 60_000L
 private data class SelectedMtz(
     val displayName: String,
     val uri: Uri
+)
+
+private data class ImportResult(
+    val requestId: String,
+    val status: String,
+    val message: String,
+    val resultAt: Long
 )
 
 class ModuleStatusActivity : ComponentActivity() {
@@ -66,6 +75,7 @@ class ModuleStatusActivity : ComponentActivity() {
                             }
                         },
                         onSendImport = { selected -> publishImportCommand(selected) },
+                        onGetResult = { requestId -> readImportResult(requestId) },
                         onOpenDiagnostics = {
                             startActivity(Intent(this, MainActivity::class.java))
                         }
@@ -123,21 +133,68 @@ class ModuleStatusActivity : ComponentActivity() {
 
         requestId
     }
+
+    private fun readImportResult(requestId: String): ImportResult? {
+        return runCatching {
+            val reply = contentResolver.call(
+                ImportControlProvider.AUTHORITY,
+                ImportControlProvider.METHOD_GET_RESULT,
+                requestId,
+                null
+            ) ?: return@runCatching null
+
+            if (!reply.getBoolean(ImportControlProvider.KEY_PRESENT, false)) {
+                return@runCatching null
+            }
+            ImportResult(
+                requestId = reply.getString(ImportControlProvider.KEY_REQUEST_ID).orEmpty(),
+                status = reply.getString(ImportControlProvider.KEY_STATUS).orEmpty(),
+                message = reply.getString(ImportControlProvider.KEY_MESSAGE).orEmpty(),
+                resultAt = reply.getLong(ImportControlProvider.KEY_RESULT_AT, 0L)
+            )
+        }.onFailure {
+            Log.w(TAG, "Unable to read import result: request=$requestId", it)
+        }.getOrNull()
+    }
 }
 
 @Composable
 private fun ControlledImportScreen(
     onOpenThemeManager: () -> Boolean,
     onSendImport: (SelectedMtz) -> Result<String>,
+    onGetResult: (String) -> ImportResult?,
     onOpenDiagnostics: () -> Unit
 ) {
     val context = LocalContext.current
     var selectedMtz by remember { mutableStateOf<SelectedMtz?>(null) }
     var showConfirmation by remember { mutableStateOf(false) }
+    var activeRequestId by remember { mutableStateOf<String?>(null) }
     var status by remember {
         mutableStateOf(
-            "v0.2.4, broadcast yerine Binder tabanlı ContentProvider + ContentObserver kontrol kanalı kullanır."
+            "v0.2.5, Theme Manager'ın gerçek start / complete / fail metodlarını doğrudan izler ve sonucu bu ekranda gösterir."
         )
+    }
+
+    LaunchedEffect(activeRequestId) {
+        val requestId = activeRequestId ?: return@LaunchedEffect
+        repeat(60) {
+            delay(500)
+            val result = onGetResult(requestId) ?: return@repeat
+            status = importResultText(result)
+            if (result.status in setOf(
+                    ImportControlProvider.STATUS_COMPLETE,
+                    ImportControlProvider.STATUS_FAIL,
+                    ImportControlProvider.STATUS_QUEUE_ERROR
+                )
+            ) {
+                activeRequestId = null
+                return@LaunchedEffect
+            }
+        }
+        if (activeRequestId == requestId) {
+            status = "Import isteği gönderildi fakat 30 saniye içinde terminal sonuç alınamadı. Vector logu ile kontrol edin. Request ID: $requestId"
+            activeRequestId = null
+        }
     }
 
     val mtzPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
@@ -181,7 +238,7 @@ private fun ControlledImportScreen(
             style = MaterialTheme.typography.headlineSmall
         )
         Text(
-            text = "Controlled MTZ Import • Provider IPC",
+            text = "Controlled MTZ Import • Direct Result",
             style = MaterialTheme.typography.titleLarge
         )
 
@@ -191,15 +248,15 @@ private fun ControlledImportScreen(
                 verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 Text(
-                    text = "v0.2.3 logunda URI izni doğrulandı ve uygulama broadcast'i gönderdi; buna rağmen Theme Manager dynamic receiver'ı hiç tetiklenmedi.",
+                    text = "v0.2.4 cihaz logunda provider IPC, 48 MB MTZ staging ve ThemeImportManager.v(...) kuyruğu başarıyla doğrulandı.",
                     style = MaterialTheme.typography.bodyLarge
                 )
                 Text(
-                    text = "v0.2.4 komutu HyperOS TDK'nın korumalı provider'ına yazar. Theme Manager içindeki LSPosed kodu ContentObserver ile değişikliği görür, kendi UID'siyle tek-seferlik komutu çeker ve ardından dosyayı private cache alanına staging eder.",
+                    text = "v0.2.5 sonuç broadcast'ine güvenmez. Theme Manager'ın kendi s(Resource)=start, t(Resource,String)=complete ve r(Resource,String)=fail metodlarını LSPosed ile doğrudan izler.",
                     style = MaterialTheme.typography.bodyMedium
                 )
                 Text(
-                    text = "Komut yalnızca açık onayınızdan sonra yayınlanır; iki dakikadan eski komutlar reddedilir ve tüketilen komut anında silinir.",
+                    text = "'dispatch error not online resource' yerel MTZ'nin onlineId taşımamasına ait online-dispatch mesajıdır; tek başına import başarısızlığı değildir.",
                     style = MaterialTheme.typography.bodyMedium
                 )
             }
@@ -209,7 +266,7 @@ private fun ControlledImportScreen(
             modifier = Modifier.fillMaxWidth(),
             onClick = {
                 status = if (onOpenThemeManager()) {
-                    "Tema Yöneticisi açıldı. Provider observer bridge hazırlandıktan sonra HyperOS TDK'ya geri dönün."
+                    "Tema Yöneticisi açıldı. Provider observer ve lifecycle hook'ları hazırlandıktan sonra HyperOS TDK'ya geri dönün."
                 } else {
                     "Tema Yöneticisi launcher activity bulunamadı."
                 }
@@ -244,10 +301,10 @@ private fun ControlledImportScreen(
 
         Button(
             modifier = Modifier.fillMaxWidth(),
-            enabled = selectedMtz != null,
+            enabled = selectedMtz != null && activeRequestId == null,
             onClick = { showConfirmation = true }
         ) {
-            Text("3. Kontrollü Import Başlat")
+            Text(if (activeRequestId == null) "3. Kontrollü Import Başlat" else "Import sonucu bekleniyor…")
         }
 
         Card(modifier = Modifier.fillMaxWidth()) {
@@ -273,7 +330,7 @@ private fun ControlledImportScreen(
             title = { Text("Gerçek MTZ import denemesi") },
             text = {
                 Text(
-                    "Seçili MTZ için Theme Manager'a geçici URI okuma izni verilecek. Tek-seferlik komut provider üzerinden Theme Manager prosesine aktarılacak ve private import kuyruğu gerçek olarak çağrılacak. Devam etmek istiyor musunuz?"
+                    "Seçili MTZ için Theme Manager'a geçici URI okuma izni verilecek. Tek-seferlik provider komutu tüketildikten sonra private import kuyruğu gerçek olarak çağrılacak ve sonuç bu ekranda gösterilecek. Devam etmek istiyor musunuz?"
                 )
             },
             confirmButton = {
@@ -283,7 +340,8 @@ private fun ControlledImportScreen(
                         selectedMtz?.let { selected ->
                             onSendImport(selected)
                                 .onSuccess { requestId ->
-                                    status = "Provider komutu yayınlandı. Request ID: $requestId. Tekrar denemeden önce Theme Manager'ı kontrol edin ve Vector logunu dışa aktarın."
+                                    activeRequestId = requestId
+                                    status = "Provider komutu yayınlandı. Theme Manager sonucu bekleniyor… Request ID: $requestId"
                                 }
                                 .onFailure { error ->
                                     status = "Import komutu yayınlanamadı: ${error.javaClass.simpleName}: ${error.message}"
@@ -300,6 +358,22 @@ private fun ControlledImportScreen(
                 }
             }
         )
+    }
+}
+
+private fun importResultText(result: ImportResult): String {
+    return when (result.status) {
+        ImportControlProvider.STATUS_QUEUED ->
+            "MTZ Theme Manager import kuyruğuna alındı. İşlem sonucu bekleniyor…"
+        ImportControlProvider.STATUS_START ->
+            "Theme Manager MTZ import işlemini başlattı. Sonuç bekleniyor…"
+        ImportControlProvider.STATUS_COMPLETE ->
+            "Import tamamlandı. Theme Manager yerel kaynağı başarıyla oluşturdu. Request ID: ${result.requestId}"
+        ImportControlProvider.STATUS_FAIL ->
+            "Theme Manager import işlemini başarısız olarak tamamladı. ${result.message} Request ID: ${result.requestId}"
+        ImportControlProvider.STATUS_QUEUE_ERROR ->
+            "Import kuyruğa alınamadı: ${result.message} Request ID: ${result.requestId}"
+        else -> "Import durumu: ${result.status}. ${result.message}"
     }
 }
 
