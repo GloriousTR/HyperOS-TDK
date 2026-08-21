@@ -43,8 +43,18 @@ import com.glorious.hyperostdk.privileged.PrivilegedThemeEngine
 import com.glorious.hyperostdk.privileged.ShizukuBridge
 import com.glorious.hyperostdk.privileged.ThemeKitCompatInstaller
 import com.glorious.hyperostdk.ui.theme.HyperOSTDKTheme
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+
+/**
+ * Import/apply must outlive the Compose screen. Opening Xiaomi Theme Manager can remove
+ * PrivilegedThemeScreen from composition on some HyperOS builds; a rememberCoroutineScope
+ * is therefore only suitable for in-screen capability work, never for the committed import.
+ */
+private val privilegedImportScope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
 class PrivilegedThemeActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -249,9 +259,14 @@ private fun PrivilegedThemeScreen() {
                     onClick = {
                         showImportConfirmation = false
                         val selected = selectedMtz ?: return@TextButton
-                        scope.launch {
-                            busy = true
-                            status = "MTZ hazırlanıyor ve Theme Manager yerel resource alanına aktarılıyor…"
+                        busy = true
+                        status = "MTZ hazırlanıyor ve Theme Manager yerel resource alanına aktarılıyor…"
+                        DiagnosticsSessionClient.append(
+                            context,
+                            "PRIVILEGED_IMPORT_SCOPE",
+                            "processScope=true • reason=ThemeManager launch must outlive Compose composition"
+                        )
+                        privilegedImportScope.launch {
                             runCatching {
                                 ThemeKitCompatInstaller.installAndOpen(
                                     context = context,
@@ -260,8 +275,19 @@ private fun PrivilegedThemeScreen() {
                                     requestAutomaticApply = true
                                 )
                             }.onSuccess { result ->
+                                DiagnosticsSessionClient.append(
+                                    context,
+                                    "PRIVILEGED_IMPORT_COMPLETED",
+                                    "localId=${result.localId} • subResources=${result.subResourceCount} • applyTriggered=${result.applyTriggered} • processScope=true"
+                                )
                                 status = "${result.message} localId=${result.localId} • subResources=${result.subResourceCount}"
                             }.onFailure { error ->
+                                DiagnosticsSessionClient.append(
+                                    context,
+                                    "PRIVILEGED_IMPORT_PROCESS_SCOPE_FAILED",
+                                    "${error.javaClass.simpleName}: ${error.message}",
+                                    level = "ERROR"
+                                )
                                 status = "Privileged import başarısız: ${error.javaClass.simpleName}: ${error.message}. Live Diagnostics kaydını paylaşın."
                             }
                             busy = false
