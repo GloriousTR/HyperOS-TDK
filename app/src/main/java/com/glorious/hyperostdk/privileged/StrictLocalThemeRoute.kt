@@ -32,7 +32,6 @@ object StrictLocalThemeRoute {
             "displayName=$displayName • build=33 • strategy=metadata-patch-and-relaunch"
         )
 
-        // First create/stage the local resource using the proven build-32 storage pipeline.
         val initial = ThemeKitCompatInstaller.installAndOpen(
             context = context,
             displayName = displayName,
@@ -48,7 +47,6 @@ object StrictLocalThemeRoute {
             level = if (patch.success) "INFO" else "WARN"
         )
 
-        // Relaunch after the metadata rewrite. This is the launch we care about in build 33.
         val intent = Intent(
             Intent.ACTION_VIEW,
             Uri.parse("ViewLocalResource://view.local.resource#${initial.localId}")
@@ -111,7 +109,9 @@ object StrictLocalThemeRoute {
 
         val verify = ShizukuBridge.exec(
             context,
-            "cat ${shellQuote(mainRemote)} | grep -o '\"version\":\"1\"\|\"price\":-1\|\"miuiAdapterVersion\":\"4.0\"' | tr '\\n' ' '"
+            "cat ${shellQuote(mainRemote)} | grep -o '\"version\":\"1\"' || true; " +
+                "cat ${shellQuote(mainRemote)} | grep -o '\"price\":-1' || true; " +
+                "cat ${shellQuote(mainRemote)} | grep -o '\"miuiAdapterVersion\":\"4.0\"' || true"
         )
 
         return PatchResult(
@@ -137,9 +137,6 @@ object StrictLocalThemeRoute {
             json.put("miuiAdapterVersion", "4.0")
         }
 
-        // On the target MTZ no filename contains "small", therefore the reference's
-        // small-preview list is empty. Copying builtInThumbnails exactly preserves that rule
-        // without guessing preview names.
         val thumbnails = json.optJSONObject("builtInThumbnails")
             ?: JSONObject().put("fallback", JSONArray())
         json.put("builtInPreviews", JSONObject(thumbnails.toString()))
