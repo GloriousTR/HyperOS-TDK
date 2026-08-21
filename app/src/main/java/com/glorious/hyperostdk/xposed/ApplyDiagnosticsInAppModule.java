@@ -3,6 +3,7 @@ package com.glorious.hyperostdk.xposed;
 import android.content.Context;
 import android.os.Bundle;
 import android.util.Log;
+import android.util.Pair;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
@@ -10,6 +11,7 @@ import java.lang.reflect.Modifier;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import io.github.libxposed.api.XposedModule;
@@ -98,6 +100,9 @@ public final class ApplyDiagnosticsInAppModule extends XposedModule {
         int count = 0;
         count += hookNamedMethods(classLoader, ONLINE_BASE_CONTROLLER, "Y");
         count += hookNamedMethods(classLoader, ONLINE_CONTROLLER, "a");
+        count += hookNamedMethods(classLoader, ONLINE_CONTROLLER, "b");
+        count += hookNamedMethods(classLoader, ONLINE_CONTROLLER, "c");
+        count += hookNamedMethods(classLoader, ONLINE_CONTROLLER, "d");
         count += hookNamedMethods(classLoader, DETAIL_CONTROLLER, "c");
         count += hookNamedMethods(classLoader, DETAIL_ASYNC_TASK, "doInBackground");
 
@@ -131,8 +136,10 @@ public final class ApplyDiagnosticsInAppModule extends XposedModule {
                     try {
                         Object result = chain.proceed();
                         long elapsedUs = (System.nanoTime() - startedAt) / 1_000L;
-                        publish("HOOK_EXIT", signature + " | result=" + describeObject(result)
+                        String describedResult = describeObject(result);
+                        publish("HOOK_EXIT", signature + " | result=" + describedResult
                                 + " | elapsedUs=" + elapsedUs, "INFO");
+                        publishSpecialObservation(className, methodName, signature, args, describedResult, elapsedUs);
                         return result;
                     } catch (Throwable error) {
                         long elapsedUs = (System.nanoTime() - startedAt) / 1_000L;
@@ -157,6 +164,33 @@ public final class ApplyDiagnosticsInAppModule extends XposedModule {
                     + error.getClass().getName() + ": " + safeString(error.getMessage()), "ERROR");
             log(Log.ERROR, TAG, "[APPLY-DIAG] unable to hook " + className + "#" + methodName, error);
             return 0;
+        }
+    }
+
+    private void publishSpecialObservation(
+            String className,
+            String methodName,
+            String signature,
+            String args,
+            String result,
+            long elapsedUs
+    ) {
+        if (!ONLINE_CONTROLLER.equals(className)) {
+            return;
+        }
+        switch (methodName) {
+            case "b":
+                publish("RIGHTS_PAIR", signature + " | args=" + args + " | result=" + result, "INFO");
+                break;
+            case "c":
+                publish("RIGHTS_MAP", signature + " | args=" + args + " | result=" + result, "INFO");
+                break;
+            case "d":
+                publish("DRM_RESULT", signature + " | args=" + args + " | result=" + result
+                        + " | elapsedUs=" + elapsedUs, "INFO");
+                break;
+            default:
+                break;
         }
     }
 
@@ -214,20 +248,90 @@ public final class ApplyDiagnosticsInAppModule extends XposedModule {
         if (value == null) {
             return "null";
         }
-        if (value instanceof CharSequence || value instanceof Number
-                || value instanceof Boolean || value instanceof Enum<?>) {
+        if (value instanceof Pair<?, ?>) {
+            Pair<?, ?> pair = (Pair<?, ?>) value;
+            return "Pair(first=" + describeObject(pair.first) + ", second=" + describeObject(pair.second) + ")";
+        }
+        if (value instanceof Map<?, ?>) {
+            return describeMap((Map<?, ?>) value);
+        }
+        if (value instanceof Enum<?>) {
+            Enum<?> enumValue = (Enum<?>) value;
+            return value.getClass().getName() + "(name=" + enumValue.name()
+                    + ", ordinal=" + enumValue.ordinal()
+                    + ", fields=" + describeSimpleFields(value, true) + ")";
+        }
+        if (value instanceof CharSequence || value instanceof Number || value instanceof Boolean) {
             return value.getClass().getSimpleName() + "(" + safeString(String.valueOf(value)) + ")";
         }
 
         Class<?> type = value.getClass();
         StringBuilder builder = new StringBuilder(type.getName());
         List<String> properties = collectKnownProperties(value);
+        if (type.getName().startsWith("miui.drm.DrmManager$DrmResult")) {
+            String drmFields = describeSimpleFields(value, true);
+            if (!drmFields.isEmpty()) {
+                properties.add("drmFields=" + drmFields);
+            }
+        }
         if (!properties.isEmpty()) {
             builder.append('{').append(String.join(", ", properties)).append('}');
         } else {
             builder.append('@').append(Integer.toHexString(System.identityHashCode(value)));
         }
         return builder.toString();
+    }
+
+    private static String describeMap(Map<?, ?> map) {
+        StringBuilder builder = new StringBuilder("Map{");
+        int count = 0;
+        for (Map.Entry<?, ?> entry : map.entrySet()) {
+            if (count > 0) builder.append(", ");
+            if (count >= 24) {
+                builder.append("…+").append(map.size() - count).append(" entries");
+                break;
+            }
+            builder.append(safeString(String.valueOf(entry.getKey())))
+                    .append('=')
+                    .append(describeObject(entry.getValue()));
+            count++;
+        }
+        return builder.append('}').toString();
+    }
+
+    private static String describeSimpleFields(Object value, boolean includeAllNames) {
+        List<String> fields = new ArrayList<>();
+        Class<?> current = value.getClass();
+        int inspected = 0;
+        while (current != null && current != Object.class && inspected < 80 && fields.size() < 20) {
+            for (Field field : current.getDeclaredFields()) {
+                if (inspected++ >= 80 || fields.size() >= 20) break;
+                if (Modifier.isStatic(field.getModifiers()) || field.isSynthetic()) continue;
+                if (!includeAllNames) {
+                    String lower = field.getName().toLowerCase(Locale.ROOT);
+                    if (!(lower.contains("id") || lower.contains("title") || lower.contains("name")
+                            || lower.contains("product") || lower.contains("online")
+                            || lower.contains("assemble") || lower.contains("local")
+                            || lower.contains("download") || lower.contains("login")
+                            || lower.contains("code") || lower.contains("result"))) {
+                        continue;
+                    }
+                }
+                try {
+                    field.setAccessible(true);
+                    Object fieldValue = field.get(value);
+                    if (fieldValue == null || fieldValue instanceof CharSequence
+                            || fieldValue instanceof Number || fieldValue instanceof Boolean
+                            || fieldValue instanceof Enum<?>) {
+                        fields.add(field.getName() + '=' + safeString(String.valueOf(fieldValue)));
+                    }
+                } catch (Throwable ignored) {
+                    // Observation only.
+                }
+            }
+            current = current.getSuperclass();
+        }
+        return String.join(",", fields);
     }
 
     private static List<String> collectKnownProperties(Object value) {
@@ -238,9 +342,10 @@ public final class ApplyDiagnosticsInAppModule extends XposedModule {
         };
 
         for (String getterName : getterNames) {
-            Object property = invokeZeroArgGetter(value, getterName);
-            if (property != null) {
-                properties.add(propertyLabel(getterName) + '=' + safeString(String.valueOf(property)));
+            GetterValue getterValue = invokeZeroArgGetter(value, getterName);
+            if (getterValue.found) {
+                properties.add(propertyLabel(getterName) + '='
+                        + safeString(String.valueOf(getterValue.value)));
             }
         }
 
@@ -250,56 +355,32 @@ public final class ApplyDiagnosticsInAppModule extends XposedModule {
         return properties;
     }
 
-    private static Object invokeZeroArgGetter(Object value, String name) {
+    private static GetterValue invokeZeroArgGetter(Object value, String name) {
         Class<?> current = value.getClass();
         while (current != null && current != Object.class) {
             try {
                 Method method = current.getDeclaredMethod(name);
                 if (method.getParameterCount() != 0) {
-                    return null;
+                    return GetterValue.missing();
                 }
                 method.setAccessible(true);
-                return method.invoke(value);
+                return GetterValue.found(method.invoke(value));
             } catch (NoSuchMethodException ignored) {
                 current = current.getSuperclass();
             } catch (Throwable ignored) {
-                return null;
+                return GetterValue.missing();
             }
         }
-        return null;
+        return GetterValue.missing();
     }
 
     private static void collectInterestingFields(Object value, List<String> properties) {
-        Class<?> current = value.getClass();
-        int inspected = 0;
-        while (current != null && current != Object.class && inspected < 80 && properties.size() < 12) {
-            for (Field field : current.getDeclaredFields()) {
-                if (inspected++ >= 80 || properties.size() >= 12) {
-                    return;
-                }
-                if (Modifier.isStatic(field.getModifiers()) || field.isSynthetic()) {
-                    continue;
-                }
-                String lower = field.getName().toLowerCase(Locale.ROOT);
-                if (!(lower.contains("id") || lower.contains("title") || lower.contains("name")
-                        || lower.contains("product") || lower.contains("online")
-                        || lower.contains("assemble") || lower.contains("local")
-                        || lower.contains("download") || lower.contains("login"))) {
-                    continue;
-                }
-                try {
-                    field.setAccessible(true);
-                    Object fieldValue = field.get(value);
-                    if (fieldValue == null || fieldValue instanceof CharSequence
-                            || fieldValue instanceof Number || fieldValue instanceof Boolean
-                            || fieldValue instanceof Enum<?>) {
-                        properties.add(field.getName() + '=' + safeString(String.valueOf(fieldValue)));
-                    }
-                } catch (Throwable ignored) {
-                    // Read-only diagnostics must never interfere with Theme Manager execution.
-                }
+        String described = describeSimpleFields(value, false);
+        if (described.isEmpty()) return;
+        for (String item : described.split(",")) {
+            if (!item.isBlank() && properties.size() < 12) {
+                properties.add(item);
             }
-            current = current.getSuperclass();
         }
     }
 
@@ -320,5 +401,23 @@ public final class ApplyDiagnosticsInAppModule extends XposedModule {
             return oneLine.substring(0, 1800) + "…";
         }
         return oneLine;
+    }
+
+    private static final class GetterValue {
+        final boolean found;
+        final Object value;
+
+        private GetterValue(boolean found, Object value) {
+            this.found = found;
+            this.value = value;
+        }
+
+        static GetterValue found(Object value) {
+            return new GetterValue(true, value);
+        }
+
+        static GetterValue missing() {
+            return new GetterValue(false, null);
+        }
     }
 }
