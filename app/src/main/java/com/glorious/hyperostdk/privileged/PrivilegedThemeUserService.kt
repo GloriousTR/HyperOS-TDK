@@ -4,7 +4,7 @@ import android.content.Context
 import android.system.Os
 import androidx.annotation.Keep
 
-class PrivilegedThemeUserService : IPrivilegedThemeService.Stub {
+class PrivilegedThemeUserService : IPrivilegedThemeService.Stub() {
     constructor()
 
     @Keep
