@@ -28,13 +28,35 @@ import com.glorious.hyperostdk.ui.theme.HyperOSTDKTheme
 class HomeActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        runCatching {
+            DiagnosticsSessionClient.ensureStarted(this)
+            DiagnosticsSessionClient.append(
+                this,
+                event = "APP_OPEN",
+                detail = "HyperOS TDK v${BuildConfig.VERSION_NAME} açıldı; always-on diagnostics aktif."
+            )
+        }
+
         setContent {
             HyperOSTDKTheme {
                 HomeScreen(
-                    onThemeTools = { startActivity(Intent(this, ModuleStatusActivity::class.java)) },
-                    onDiagnostics = { startActivity(Intent(this, MainActivity::class.java)) },
-                    onModuleSystem = { startActivity(Intent(this, ModuleSystemActivity::class.java)) },
-                    onInformation = { startActivity(Intent(this, InformationActivity::class.java)) }
+                    onThemeTools = {
+                        DiagnosticsSessionClient.append(this, "NAVIGATION", "Theme Tools açıldı")
+                        startActivity(Intent(this, ModuleStatusActivity::class.java))
+                    },
+                    onDiagnostics = {
+                        DiagnosticsSessionClient.append(this, "NAVIGATION", "Live Diagnostics açıldı")
+                        startActivity(Intent(this, LiveDiagnosticsActivity::class.java))
+                    },
+                    onModuleSystem = {
+                        DiagnosticsSessionClient.append(this, "NAVIGATION", "Module & System açıldı")
+                        startActivity(Intent(this, ModuleSystemActivity::class.java))
+                    },
+                    onInformation = {
+                        DiagnosticsSessionClient.append(this, "NAVIGATION", "Bilgi & Ayarlar açıldı")
+                        startActivity(Intent(this, InformationActivity::class.java))
+                    }
                 )
             }
         }
@@ -76,7 +98,7 @@ private fun HomeScreen(
             }
             item {
                 Text(
-                    "Tema araçları, tanılama, modül durumu ve uygulama bilgilerini ayrı bölümlerde yönetin.",
+                    "Tema araçları, tanılama, modül durumu ve uygulama bilgilerini ayrı bölümlerde yönetin. Tanılama kaydı uygulama açıldığında otomatik başlar ve sürekli aktiftir.",
                     style = MaterialTheme.typography.bodyMedium
                 )
             }
@@ -94,9 +116,9 @@ private fun HomeScreen(
                     )
                     HomeMenuCard(
                         modifier = Modifier.weight(1f),
-                        badge = "D",
+                        badge = "LIVE",
                         title = "Diagnostics",
-                        description = "Probe, inceleme ve tanılama raporları",
+                        description = "Otomatik canlı kayıt, paylaşım ve gelişmiş tanılama",
                         onClick = onDiagnostics
                     )
                 }
