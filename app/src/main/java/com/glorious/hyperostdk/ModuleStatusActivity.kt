@@ -196,7 +196,7 @@ private fun ControlledImportScreen(
             }
         }
         if (activeRequestId == requestId) {
-            status = "Import isteği gönderildi fakat 30 saniye içinde terminal sonuç alınamadı. Vector logu ile kontrol edin. Request ID: $requestId"
+            status = "Import isteği gönderildi fakat 30 saniye içinde terminal sonuç alınamadı. Live Diagnostics zaman çizelgesini kontrol edin. Request ID: $requestId"
             activeRequestId = null
         }
     }
