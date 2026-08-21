@@ -4,9 +4,14 @@
     <queries>
         <package android:name="com.android.thememanager" />
         <package android:name="com.android.thememanager.module" />
+        <package android:name="com.hamondev.shevery" />
+        <package android:name="moe.shizuku.privileged.api" />
         <intent>
             <action android:name="android.intent.action.VIEW" />
             <data android:mimeType="application/zip" />
+        </intent>
+        <intent>
+            <action android:name="rikka.shizuku.intent.action.REQUEST_BINDER" />
         </intent>
     </queries>
 
