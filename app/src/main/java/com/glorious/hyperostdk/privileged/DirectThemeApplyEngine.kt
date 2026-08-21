@@ -33,10 +33,10 @@ object DirectThemeApplyEngine {
         DiagnosticsSessionClient.append(
             appContext,
             "DIRECT_APPLY_STARTED",
-            "name=$displayName • backend=${capability.state.backend} • uid=${capability.state.serverUid} • build=34"
+            "name=$displayName • backend=${capability.state.backend} • uid=${capability.state.serverUid} • build=35"
         )
 
-        val localDir = appContext.getExternalFilesDir("direct-apply-build34")
+        val localDir = appContext.getExternalFilesDir("direct-apply-build35")
             ?: error("External files directory is unavailable")
         localDir.mkdirs()
         val localMtz = File(localDir, "snapshot-source.mtz")
@@ -141,7 +141,7 @@ object DirectThemeApplyEngine {
         DiagnosticsSessionClient.append(
             appContext,
             "DIRECT_APPLY_FALLBACK_CONTEXT",
-            "context=${context.javaClass.name} • applicationContext=${appContext.javaClass.name} • build=34 • strictMetadata=true"
+            "context=${context.javaClass.name} • applicationContext=${appContext.javaClass.name} • build=35 • strictMetadata=true"
         )
 
         val fallback = StrictLocalThemeRoute.installAndOpen(
@@ -153,7 +153,7 @@ object DirectThemeApplyEngine {
         DiagnosticsSessionClient.append(
             appContext,
             "DIRECT_APPLY_FALLBACK_OPENED",
-            "localId=${fallback.localId} • subResources=${fallback.subResourceCount} • automaticApply=false • strictMetadata=true • build=34"
+            "localId=${fallback.localId} • subResources=${fallback.subResourceCount} • automaticApply=false • strictMetadata=true • build=35"
         )
 
         return ApplyResult(
@@ -224,6 +224,6 @@ object DirectThemeApplyEngine {
 
     private const val THEME_MANAGER_PACKAGE = "com.android.thememanager"
     private const val SNAPSHOT_PATH = "/storage/emulated/0/Android/data/com.android.thememanager/files/snapshot/snapshot.mtz"
-    private const val SNAPSHOT_TMP_PATH = "$SNAPSHOT_PATH.hyperos-tdk-build34.tmp"
+    private const val SNAPSHOT_TMP_PATH = "$SNAPSHOT_PATH.hyperos-tdk-build35.tmp"
     private const val SNAPSHOT_PATH_FOR_INTENT = "/sdcard/Android/data/com.android.thememanager/files/snapshot/snapshot.mtz"
 }
