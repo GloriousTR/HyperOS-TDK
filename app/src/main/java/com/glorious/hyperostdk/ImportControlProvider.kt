@@ -16,15 +16,27 @@ class ImportControlProvider : ContentProvider() {
 
         const val METHOD_PUBLISH = "publish"
         const val METHOD_CONSUME = "consume"
+        const val METHOD_REPORT_RESULT = "report_result"
+        const val METHOD_GET_RESULT = "get_result"
 
         const val KEY_PRESENT = "present"
         const val KEY_REQUEST_ID = "request_id"
         const val KEY_DISPLAY_NAME = "display_name"
         const val KEY_URI = "uri"
         const val KEY_CREATED_AT = "created_at"
+        const val KEY_STATUS = "status"
+        const val KEY_MESSAGE = "message"
+        const val KEY_RESULT_AT = "result_at"
+
+        const val STATUS_QUEUED = "queued"
+        const val STATUS_START = "start"
+        const val STATUS_COMPLETE = "complete"
+        const val STATUS_FAIL = "fail"
+        const val STATUS_QUEUE_ERROR = "queue_error"
 
         private const val TARGET_PACKAGE = "com.android.thememanager"
-        private const val PREFS = "import_control"
+        private const val COMMAND_PREFS = "import_control"
+        private const val RESULT_PREFS = "import_result"
         private const val MAX_COMMAND_AGE_MS = 120_000L
         private const val TAG = "HyperOS-TDK-IPC"
     }
@@ -37,6 +49,8 @@ class ImportControlProvider : ContentProvider() {
         return when (method) {
             METHOD_PUBLISH -> publish(extras)
             METHOD_CONSUME -> consume()
+            METHOD_REPORT_RESULT -> reportResult(extras)
+            METHOD_GET_RESULT -> getResult(arg)
             else -> throw IllegalArgumentException("Unsupported method: $method")
         }
     }
@@ -55,7 +69,8 @@ class ImportControlProvider : ContentProvider() {
         require(createdAt > 0L) { "created_at is missing" }
 
         synchronized(lock) {
-            prefs().edit()
+            resultPrefs().edit().clear().commit()
+            commandPrefs().edit()
                 .putString(KEY_REQUEST_ID, requestId)
                 .putString(KEY_DISPLAY_NAME, displayName)
                 .putString(KEY_URI, uriText)
@@ -65,15 +80,13 @@ class ImportControlProvider : ContentProvider() {
 
         context?.contentResolver?.notifyChange(CONTROL_URI, null)
         Log.i(TAG, "Provider command published: request=$requestId uri=$uri")
-        return Bundle().apply {
-            putBoolean("accepted", true)
-        }
+        return Bundle().apply { putBoolean("accepted", true) }
     }
 
     private fun consume(): Bundle {
         enforceThemeManagerCaller()
         synchronized(lock) {
-            val prefs = prefs()
+            val prefs = commandPrefs()
             val requestId = prefs.getString(KEY_REQUEST_ID, null)
             val displayName = prefs.getString(KEY_DISPLAY_NAME, null)
             val uriText = prefs.getString(KEY_URI, null)
@@ -102,10 +115,57 @@ class ImportControlProvider : ContentProvider() {
         }
     }
 
+    private fun reportResult(extras: Bundle?): Bundle {
+        enforceThemeManagerCaller()
+        val requestId = extras?.getString(KEY_REQUEST_ID).orEmpty()
+        val status = extras?.getString(KEY_STATUS).orEmpty()
+        val message = extras?.getString(KEY_MESSAGE).orEmpty()
+        val resultAt = extras?.getLong(KEY_RESULT_AT, 0L) ?: 0L
+
+        require(requestId.isNotBlank()) { "result request_id is missing" }
+        require(status in setOf(STATUS_QUEUED, STATUS_START, STATUS_COMPLETE, STATUS_FAIL, STATUS_QUEUE_ERROR)) {
+            "unsupported result status: $status"
+        }
+        require(resultAt > 0L) { "result_at is missing" }
+
+        synchronized(lock) {
+            resultPrefs().edit()
+                .putString(KEY_REQUEST_ID, requestId)
+                .putString(KEY_STATUS, status)
+                .putString(KEY_MESSAGE, message)
+                .putLong(KEY_RESULT_AT, resultAt)
+                .commit()
+        }
+        Log.i(TAG, "Provider import result: request=$requestId status=$status message=$message")
+        return Bundle().apply { putBoolean("accepted", true) }
+    }
+
+    private fun getResult(requestId: String?): Bundle {
+        enforceOwnAppCaller()
+        synchronized(lock) {
+            val prefs = resultPrefs()
+            val storedRequestId = prefs.getString(KEY_REQUEST_ID, null)
+            val status = prefs.getString(KEY_STATUS, null)
+            if (storedRequestId.isNullOrBlank() || status.isNullOrBlank()) {
+                return Bundle().apply { putBoolean(KEY_PRESENT, false) }
+            }
+            if (!requestId.isNullOrBlank() && requestId != storedRequestId) {
+                return Bundle().apply { putBoolean(KEY_PRESENT, false) }
+            }
+            return Bundle().apply {
+                putBoolean(KEY_PRESENT, true)
+                putString(KEY_REQUEST_ID, storedRequestId)
+                putString(KEY_STATUS, status)
+                putString(KEY_MESSAGE, prefs.getString(KEY_MESSAGE, ""))
+                putLong(KEY_RESULT_AT, prefs.getLong(KEY_RESULT_AT, 0L))
+            }
+        }
+    }
+
     private fun enforceOwnAppCaller() {
         val callerUid = Binder.getCallingUid()
         if (callerUid != Process.myUid()) {
-            throw SecurityException("Only HyperOS TDK can publish import commands")
+            throw SecurityException("Only HyperOS TDK can publish/read import state")
         }
     }
 
@@ -117,13 +177,16 @@ class ImportControlProvider : ContentProvider() {
         val packageMatches = reportedPackage == null || reportedPackage == TARGET_PACKAGE
         if (!ownsThemeManager || !packageMatches) {
             throw SecurityException(
-                "Only Theme Manager can consume import commands: uid=$callerUid package=$reportedPackage"
+                "Only Theme Manager can consume/report import state: uid=$callerUid package=$reportedPackage"
             )
         }
     }
 
-    private fun prefs() = requireNotNull(context)
-        .getSharedPreferences(PREFS, android.content.Context.MODE_PRIVATE)
+    private fun commandPrefs() = requireNotNull(context)
+        .getSharedPreferences(COMMAND_PREFS, android.content.Context.MODE_PRIVATE)
+
+    private fun resultPrefs() = requireNotNull(context)
+        .getSharedPreferences(RESULT_PREFS, android.content.Context.MODE_PRIVATE)
 
     override fun query(
         uri: Uri,
