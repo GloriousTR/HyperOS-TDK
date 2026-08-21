@@ -1,13 +1,9 @@
 package com.glorious.hyperostdk.xposed;
 
-import android.content.BroadcastReceiver;
 import android.content.ContentResolver;
 import android.content.Context;
-import android.content.Intent;
-import android.content.IntentFilter;
 import android.database.ContentObserver;
 import android.net.Uri;
-import android.os.Build;
 import android.os.Bundle;
 import android.util.Log;
 
@@ -30,11 +26,10 @@ import io.github.libxposed.api.XposedModule;
 /**
  * LSPosed bridge for Xiaomi Theme Manager.
  *
- * <p>v0.2.4 replaces cross-app custom broadcasts with Binder-backed ContentProvider +
- * ContentObserver IPC. HyperOS TDK publishes a one-shot command only after explicit user
- * confirmation. Theme Manager observes that provider, consumes the command with its own UID,
- * stages the granted content URI into private cache, and only then invokes the proven private
- * import path.</p>
+ * <p>v0.2.5 keeps the proven ContentProvider + ContentObserver command channel and adds direct
+ * hooks around ThemeImportManager's start/complete/fail lifecycle methods. This avoids relying on
+ * custom broadcast delivery for result tracking and lets HyperOS TDK report the final state in its
+ * own UI. Import still requires explicit user selection and confirmation.</p>
  */
 public final class HyperOSTDKModule extends XposedModule {
     private static final String TAG = "HyperOS-TDK";
@@ -43,15 +38,20 @@ public final class HyperOSTDKModule extends XposedModule {
     private static final String CONTROL_AUTHORITY = "com.glorious.hyperostdk.control";
     private static final Uri CONTROL_URI = Uri.parse("content://" + CONTROL_AUTHORITY + "/command");
     private static final String METHOD_CONSUME = "consume";
+    private static final String METHOD_REPORT_RESULT = "report_result";
     private static final String KEY_PRESENT = "present";
     private static final String KEY_REQUEST_ID = "request_id";
     private static final String KEY_DISPLAY_NAME = "display_name";
     private static final String KEY_URI = "uri";
+    private static final String KEY_STATUS = "status";
+    private static final String KEY_MESSAGE = "message";
+    private static final String KEY_RESULT_AT = "result_at";
 
-    private static final String ACTION_IMPORT_START = "action_resource_import_start";
-    private static final String ACTION_IMPORT_UPDATE = "action_resource_import_udpate";
-    private static final String ACTION_IMPORT_COMPLETE = "action_resource_import_complete";
-    private static final String ACTION_IMPORT_FAIL = "action_resource_import_fail";
+    private static final String STATUS_QUEUED = "queued";
+    private static final String STATUS_START = "start";
+    private static final String STATUS_COMPLETE = "complete";
+    private static final String STATUS_FAIL = "fail";
+    private static final String STATUS_QUEUE_ERROR = "queue_error";
 
     private static final String THEME_APPLICATION =
             "com.android.thememanager.ThemeApplication";
@@ -71,6 +71,7 @@ public final class HyperOSTDKModule extends XposedModule {
     private static final long MAX_MTZ_BYTES = 512L * 1024L * 1024L;
 
     private final AtomicBoolean controlBridgeRegistered = new AtomicBoolean(false);
+    private final AtomicBoolean lifecycleHooksInstalled = new AtomicBoolean(false);
     private final ExecutorService importExecutor = Executors.newSingleThreadExecutor();
     private volatile ClassLoader themeManagerClassLoader;
     private volatile String activeRequestId;
@@ -131,6 +132,8 @@ public final class HyperOSTDKModule extends XposedModule {
         }
         final Context appContext = context;
 
+        installImportLifecycleHooks(themeManagerClassLoader, appContext);
+
         controlObserver = new ContentObserver(null) {
             @Override
             public void onChange(boolean selfChange, Uri uri) {
@@ -140,35 +143,70 @@ public final class HyperOSTDKModule extends XposedModule {
         };
         appContext.getContentResolver().registerContentObserver(CONTROL_URI, false, controlObserver);
 
-        BroadcastReceiver resultMonitor = new BroadcastReceiver() {
-            @Override
-            public void onReceive(Context receiverContext, Intent intent) {
-                String action = intent.getAction();
-                if (action == null) {
-                    return;
-                }
-                String request = activeRequestId == null ? "none" : activeRequestId;
-                log(Log.INFO, TAG, "[IMPORT EVENT] request=" + request + " action=" + action);
-                if (ACTION_IMPORT_COMPLETE.equals(action) || ACTION_IMPORT_FAIL.equals(action)) {
-                    activeRequestId = null;
-                    cleanupActiveStagedFile();
-                }
-            }
-        };
+        log(Log.INFO, TAG,
+                "CONTROLLED IMPORT BRIDGE READY: provider observer + direct lifecycle hooks active in Theme Manager process.");
+    }
 
-        IntentFilter resultFilter = new IntentFilter();
-        resultFilter.addAction(ACTION_IMPORT_START);
-        resultFilter.addAction(ACTION_IMPORT_UPDATE);
-        resultFilter.addAction(ACTION_IMPORT_COMPLETE);
-        resultFilter.addAction(ACTION_IMPORT_FAIL);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            appContext.registerReceiver(resultMonitor, resultFilter, Context.RECEIVER_NOT_EXPORTED);
-        } else {
-            appContext.registerReceiver(resultMonitor, resultFilter);
+    private void installImportLifecycleHooks(ClassLoader classLoader, Context context) {
+        if (classLoader == null) {
+            log(Log.ERROR, TAG, "Cannot install lifecycle hooks: Theme Manager ClassLoader unavailable");
+            return;
+        }
+        if (!lifecycleHooksInstalled.compareAndSet(false, true)) {
+            return;
         }
 
-        log(Log.INFO, TAG,
-                "CONTROLLED IMPORT BRIDGE READY: provider ContentObserver registered in Theme Manager process.");
+        try {
+            Class<?> resourceClass = Class.forName(RESOURCE, false, classLoader);
+            Class<?> importManagerClass = Class.forName(THEME_IMPORT_MANAGER, false, classLoader);
+            Method startMethod = importManagerClass.getDeclaredMethod("s", resourceClass);
+            Method completeMethod = importManagerClass.getDeclaredMethod("t", resourceClass, String.class);
+            Method failMethod = importManagerClass.getDeclaredMethod("r", resourceClass, String.class);
+
+            hook(startMethod).intercept(chain -> {
+                String request = activeRequestId;
+                if (request != null) {
+                    log(Log.INFO, TAG, "CONTROLLED IMPORT LIFECYCLE START: request=" + request);
+                    reportImportResult(context, request, STATUS_START,
+                            "ThemeImportManager.s(Resource) reached");
+                }
+                return chain.proceed();
+            });
+
+            hook(completeMethod).intercept(chain -> {
+                String request = activeRequestId;
+                if (request != null) {
+                    log(Log.INFO, TAG, "CONTROLLED IMPORT LIFECYCLE COMPLETE: request=" + request);
+                    reportImportResult(context, request, STATUS_COMPLETE,
+                            "ThemeImportManager.t(Resource, String) reached");
+                }
+                try {
+                    return chain.proceed();
+                } finally {
+                    finishActiveRequest(request);
+                }
+            });
+
+            hook(failMethod).intercept(chain -> {
+                String request = activeRequestId;
+                if (request != null) {
+                    log(Log.ERROR, TAG, "CONTROLLED IMPORT LIFECYCLE FAIL: request=" + request);
+                    reportImportResult(context, request, STATUS_FAIL,
+                            "ThemeImportManager.r(Resource, String) reached");
+                }
+                try {
+                    return chain.proceed();
+                } finally {
+                    finishActiveRequest(request);
+                }
+            });
+
+            log(Log.INFO, TAG,
+                    "[OK] Direct ThemeImportManager lifecycle hooks installed: s=start, t=complete, r=fail.");
+        } catch (Throwable error) {
+            lifecycleHooksInstalled.set(false);
+            log(Log.ERROR, TAG, "Unable to install direct ThemeImportManager lifecycle hooks", error);
+        }
     }
 
     private void consumeProviderCommand(Context context) {
@@ -248,8 +286,10 @@ public final class HyperOSTDKModule extends XposedModule {
             log(Log.INFO, TAG, "CONTROLLED IMPORT invoking ThemeImportManager.v(...): request="
                     + safeRequestId);
             importMethod.invoke(importManager, resourceContext, resource);
+            reportImportResult(context, safeRequestId, STATUS_QUEUED,
+                    "ThemeImportManager.v(ResourceContext, Resource) queued");
             log(Log.INFO, TAG, "CONTROLLED IMPORT queued successfully: request=" + safeRequestId
-                    + ". Waiting for Theme Manager import event broadcasts.");
+                    + ". Direct lifecycle hooks will report the final result.");
         } catch (Throwable error) {
             if (safeRequestId.equals(activeRequestId)) {
                 activeRequestId = null;
@@ -258,9 +298,42 @@ public final class HyperOSTDKModule extends XposedModule {
             Throwable cause = error instanceof InvocationTargetException && error.getCause() != null
                     ? error.getCause()
                     : error;
+            reportImportResult(context, safeRequestId, STATUS_QUEUE_ERROR,
+                    cause.getClass().getSimpleName() + ": " + String.valueOf(cause.getMessage()));
             log(Log.ERROR, TAG, "CONTROLLED IMPORT failed before/while queueing: request="
                     + safeRequestId + " uri=" + uri, cause);
         }
+    }
+
+    private void reportImportResult(
+            Context context,
+            String requestId,
+            String status,
+            String message
+    ) {
+        try {
+            Bundle result = new Bundle();
+            result.putString(KEY_REQUEST_ID, requestId);
+            result.putString(KEY_STATUS, status);
+            result.putString(KEY_MESSAGE, message == null ? "" : message);
+            result.putLong(KEY_RESULT_AT, System.currentTimeMillis());
+            context.getContentResolver().call(
+                    CONTROL_AUTHORITY,
+                    METHOD_REPORT_RESULT,
+                    null,
+                    result
+            );
+        } catch (Throwable error) {
+            log(Log.ERROR, TAG, "Unable to report import result to HyperOS TDK provider: request="
+                    + requestId + " status=" + status, error);
+        }
+    }
+
+    private void finishActiveRequest(String requestId) {
+        if (requestId != null && requestId.equals(activeRequestId)) {
+            activeRequestId = null;
+        }
+        cleanupActiveStagedFile();
     }
 
     private void validateRequestMetadata(String displayName, Uri uri) {
