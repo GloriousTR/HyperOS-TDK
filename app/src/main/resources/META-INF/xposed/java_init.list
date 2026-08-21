@@ -1,2 +1,3 @@
 com.glorious.hyperostdk.xposed.HyperOSTDKModule
 com.glorious.hyperostdk.xposed.ApplyDiagnosticsInAppModule
+com.glorious.hyperostdk.xposed.DownloadRightsPayloadDiagnosticsModule
