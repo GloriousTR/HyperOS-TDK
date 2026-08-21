@@ -1,7 +1,9 @@
 package com.glorious.hyperostdk
 
 import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
+import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -42,6 +44,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
 
+private const val TARGET_PACKAGE = "com.android.thememanager"
+
 class LiveDiagnosticsActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -58,7 +62,8 @@ class LiveDiagnosticsActivity : ComponentActivity() {
             HyperOSTDKTheme {
                 LiveDiagnosticsScreen(
                     onShare = { shareDiagnostics(it) },
-                    onOpenAdvanced = { startActivity(Intent(this, MainActivity::class.java)) }
+                    onOpenAdvanced = { startActivity(Intent(this, MainActivity::class.java)) },
+                    onOpenThemeManagerSettings = { openThemeManagerSettings() }
                 )
             }
         }
@@ -100,17 +105,50 @@ class LiveDiagnosticsActivity : ComponentActivity() {
             ).show()
         }
     }
+
+    private fun openThemeManagerSettings() {
+        runCatching {
+            startActivity(
+                Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                    data = Uri.parse("package:$TARGET_PACKAGE")
+                }
+            )
+            DiagnosticsSessionClient.append(
+                this,
+                event = "THEME_MANAGER_SETTINGS_OPENED",
+                detail = "Eski LSPosed hook sürecini sonlandırmak için Theme Manager uygulama bilgisi açıldı."
+            )
+        }.onFailure {
+            Toast.makeText(this, "Theme Manager uygulama bilgisi açılamadı.", Toast.LENGTH_LONG).show()
+        }
+    }
+}
+
+private data class HookRuntimeStatus(
+    val state: State,
+    val message: String
+) {
+    enum class State { READY, WAITING, STALE }
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun LiveDiagnosticsScreen(
     onShare: (File) -> Unit,
-    onOpenAdvanced: () -> Unit
+    onOpenAdvanced: () -> Unit,
+    onOpenThemeManagerSettings: () -> Unit
 ) {
     val context = androidx.compose.ui.platform.LocalContext.current
     var snapshot by remember { mutableStateOf<DiagnosticsSessionClient.Snapshot?>(null) }
     var status by remember { mutableStateOf("Canlı tanılama oturumu hazırlanıyor…") }
+    var hookRuntimeStatus by remember {
+        mutableStateOf(
+            HookRuntimeStatus(
+                HookRuntimeStatus.State.WAITING,
+                "Theme Manager hook durumu bekleniyor…"
+            )
+        )
+    }
 
     LaunchedEffect(Unit) {
         withContext(Dispatchers.IO) {
@@ -125,6 +163,7 @@ private fun LiveDiagnosticsScreen(
             } else {
                 "Tanılama oturumu okunamadı; yeniden deneniyor…"
             }
+            hookRuntimeStatus = evaluateHookRuntime(snapshot?.text.orEmpty())
             delay(750)
         }
     }
@@ -169,6 +208,30 @@ private fun LiveDiagnosticsScreen(
             }
 
             item {
+                Card(modifier = Modifier.fillMaxWidth()) {
+                    Column(
+                        modifier = Modifier.padding(16.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text("Theme Manager Hook Durumu", style = MaterialTheme.typography.titleMedium)
+                        Text(hookRuntimeStatus.message, style = MaterialTheme.typography.bodyMedium)
+                        if (hookRuntimeStatus.state == HookRuntimeStatus.State.STALE) {
+                            Text(
+                                "Yeni APK kurulsa bile çalışan Theme Manager süreci eski LSPosed kodunu bellekte tutabilir. Uygulama Bilgisi'nden Zorla Durdur yapıp Theme Manager'ı yeniden açın.",
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                            Button(
+                                modifier = Modifier.fillMaxWidth(),
+                                onClick = onOpenThemeManagerSettings
+                            ) {
+                                Text("Theme Manager Uygulama Bilgisini Aç")
+                            }
+                        }
+                    }
+                }
+            }
+
+            item {
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.spacedBy(10.dp)
@@ -189,6 +252,7 @@ private fun LiveDiagnosticsScreen(
                             runCatching { DiagnosticsSessionClient.clearAndRestart(context) }
                                 .onSuccess {
                                     snapshot = it
+                                    hookRuntimeStatus = evaluateHookRuntime(it?.text.orEmpty())
                                     status = "Kayıt temizlendi; yeni oturum otomatik başladı."
                                 }
                                 .onFailure { status = "Kayıt temizlenemedi: ${it.message}" }
@@ -240,6 +304,41 @@ private fun LiveDiagnosticsScreen(
                 }
             }
         }
+    }
+}
+
+private fun evaluateHookRuntime(text: String): HookRuntimeStatus {
+    if (text.isBlank()) {
+        return HookRuntimeStatus(
+            HookRuntimeStatus.State.WAITING,
+            "Theme Manager henüz bu tanılama oturumuna bağlanmadı."
+        )
+    }
+
+    val hasThemeManagerEvents = text.contains("ThemeManager.ApplyDiagnostics")
+    val hasRightsPairHook =
+        text.contains("HOOK_INSTALLED | com.android.thememanager.controller.online.a#b(") ||
+            text.contains("RIGHTS_PAIR")
+    val hasRightsMapHook =
+        text.contains("HOOK_INSTALLED | com.android.thememanager.controller.online.a#c(") ||
+            text.contains("RIGHTS_MAP")
+    val hasDrmHook =
+        text.contains("HOOK_INSTALLED | com.android.thememanager.controller.online.a#d(") ||
+            text.contains("DRM_RESULT")
+
+    return when {
+        hasRightsPairHook && hasRightsMapHook && hasDrmHook -> HookRuntimeStatus(
+            HookRuntimeStatus.State.READY,
+            "Güncel rights/DRM hook seti aktif. RIGHTS_PAIR, RIGHTS_MAP ve DRM_RESULT izlenebilir."
+        )
+        hasThemeManagerEvents -> HookRuntimeStatus(
+            HookRuntimeStatus.State.STALE,
+            "Theme Manager çalışıyor fakat güncel rights/DRM hook seti yüklenmemiş. Hedef süreç eski LSPosed modül kodunu bellekte tutuyor."
+        )
+        else -> HookRuntimeStatus(
+            HookRuntimeStatus.State.WAITING,
+            "Theme Manager hook bağlantısı bekleniyor. Theme Manager açıldığında durum otomatik güncellenecek."
+        )
     }
 }
 
