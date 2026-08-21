@@ -38,6 +38,10 @@
             android:exported="false" />
 
         <activity
+            android:name=".PrivilegedThemeActivity"
+            android:exported="false" />
+
+        <activity
             android:name=".LiveDiagnosticsActivity"
             android:exported="false" />
 
