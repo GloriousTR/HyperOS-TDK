@@ -42,6 +42,7 @@ import androidx.compose.ui.unit.dp
 import com.glorious.hyperostdk.privileged.PrivilegedThemeEngine
 import com.glorious.hyperostdk.privileged.ShizukuBridge
 import com.glorious.hyperostdk.privileged.ThemeKitCompatInstaller
+import com.glorious.hyperostdk.privileged.ThemeManagerCrashProbe
 import com.glorious.hyperostdk.ui.theme.HyperOSTDKTheme
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -240,7 +241,7 @@ private fun PrivilegedThemeScreen() {
 
         Spacer(Modifier.height(4.dp))
         Text(
-            "Not: 0.4.1 rights dosyası üretmez, Xiaomi trial kontrolünü devre dışı bırakmaz ve mevcut 413 diagnostics motorunu kaldırmaz. Bu ekran yalnız yerel resource staging + resmi Theme Manager Apply akışını test eder.",
+            "Build 29 tanılama modu: Theme Manager otomatik Apply tetiklenmez; detay ekranı kararlı kalırsa Uygula düğmesine elle basın. Uygulama kapanırsa crash/exit bilgisi otomatik kaydedilir.",
             style = MaterialTheme.typography.bodySmall
         )
     }
@@ -251,7 +252,7 @@ private fun PrivilegedThemeScreen() {
             title = { Text("Privileged Local Import") },
             text = {
                 Text(
-                    "Seçili MTZ ThemeKit-benzeri .mrc/.mrm resource ağacına dönüştürülecek ve yalnız bu işlem için üretilen yeni localId dosyaları Shevery/Shizuku üzerinden Theme Manager .data alanına yazılacak. Ardından Xiaomi Theme Manager'ın LocalResource ekranı açılacak. Devam edilsin mi?"
+                    "Seçili MTZ ThemeKit-benzeri .mrc/.mrm resource ağacına dönüştürülecek ve yeni localId dosyaları Shevery/Shizuku üzerinden Theme Manager .data alanına yazılacak. Build 29'da otomatik Apply kapalıdır; Theme Manager detay ekranı açık kalırsa Uygula'ya elle dokunun."
                 )
             },
             confirmButton = {
@@ -259,31 +260,35 @@ private fun PrivilegedThemeScreen() {
                     onClick = {
                         showImportConfirmation = false
                         val selected = selectedMtz ?: return@TextButton
+                        val appContext = context.applicationContext
                         busy = true
-                        status = "MTZ hazırlanıyor ve Theme Manager yerel resource alanına aktarılıyor…"
+                        status = "MTZ hazırlanıyor; Theme Manager crash probe ve manuel Apply izolasyon testi çalışıyor…"
                         DiagnosticsSessionClient.append(
-                            context,
+                            appContext,
                             "PRIVILEGED_IMPORT_SCOPE",
-                            "processScope=true • reason=ThemeManager launch must outlive Compose composition"
+                            "processScope=true • applyMode=manual-diagnostic • crashProbe=true"
                         )
+                        privilegedImportScope.launch {
+                            ThemeManagerCrashProbe.captureWindow(appContext)
+                        }
                         privilegedImportScope.launch {
                             runCatching {
                                 ThemeKitCompatInstaller.installAndOpen(
-                                    context = context,
+                                    context = appContext,
                                     displayName = selected.displayName,
                                     sourceUri = selected.uri,
-                                    requestAutomaticApply = true
+                                    requestAutomaticApply = false
                                 )
                             }.onSuccess { result ->
                                 DiagnosticsSessionClient.append(
-                                    context,
+                                    appContext,
                                     "PRIVILEGED_IMPORT_COMPLETED",
-                                    "localId=${result.localId} • subResources=${result.subResourceCount} • applyTriggered=${result.applyTriggered} • processScope=true"
+                                    "localId=${result.localId} • subResources=${result.subResourceCount} • applyTriggered=${result.applyTriggered} • processScope=true • applyMode=manual-diagnostic"
                                 )
                                 status = "${result.message} localId=${result.localId} • subResources=${result.subResourceCount}"
                             }.onFailure { error ->
                                 DiagnosticsSessionClient.append(
-                                    context,
+                                    appContext,
                                     "PRIVILEGED_IMPORT_PROCESS_SCOPE_FAILED",
                                     "${error.javaClass.simpleName}: ${error.message}",
                                     level = "ERROR"
