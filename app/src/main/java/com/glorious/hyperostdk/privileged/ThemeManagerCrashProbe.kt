@@ -83,7 +83,7 @@ object ThemeManagerCrashProbe {
             ShizukuBridge.exec(
                 appContext,
                 "logcat -d -v threadtime -t 700 2>/dev/null | " +
-                    "grep -E 'AndroidRuntime|FATAL EXCEPTION|com.android.thememanager|ThemeDetailActivity|ClassCastException|NullPointerException|JSONException|IllegalStateException|Resources\\$NotFoundException' | tail -n 220"
+                    "grep -E 'AndroidRuntime|FATAL EXCEPTION|com.android.thememanager|ThemeDetailActivity|ClassCastException|NullPointerException|JSONException|IllegalStateException|NotFoundException' | tail -n 220"
             )
         }.getOrNull()
         DiagnosticsSessionClient.append(
