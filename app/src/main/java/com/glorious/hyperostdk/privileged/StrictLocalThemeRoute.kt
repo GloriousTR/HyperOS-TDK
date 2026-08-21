@@ -11,13 +11,11 @@ import org.json.JSONObject
 import java.io.File
 
 /**
- * Build 33 strict local-resource route.
+ * Build 34 strict local-resource route.
  *
- * The existing local-resource installer is kept intact so we can compare device behavior.
- * After its first launch, this route rewrites only the generated local metadata owned by
- * HyperOS-TDK to match the stricter Theme Manager schema observed in the working reference:
- * version=1, price=-1, platform-17 adapter=4.0 and builtInPreviews=builtInThumbnails.
- * It then relaunches the same localId and captures a short activity/process timeline.
+ * Keeps build 33 metadata behavior unchanged and adds post-crash diagnostics only.
+ * This lets the next device test capture the actual Theme Manager exception/exit reason
+ * instead of changing metadata again without evidence.
  */
 object StrictLocalThemeRoute {
     suspend fun installAndOpen(
@@ -29,7 +27,7 @@ object StrictLocalThemeRoute {
         DiagnosticsSessionClient.append(
             appContext,
             "STRICT_LOCAL_ROUTE_STARTED",
-            "displayName=$displayName • build=33 • strategy=metadata-patch-and-relaunch"
+            "displayName=$displayName • build=34 • strategy=build33-metadata+crash-capture"
         )
 
         val initial = ThemeKitCompatInstaller.installAndOpen(
@@ -62,10 +60,11 @@ object StrictLocalThemeRoute {
         DiagnosticsSessionClient.append(
             appContext,
             "STRICT_LOCAL_RESOURCE_RELAUNCHED",
-            "localId=${initial.localId} • REQUEST_APPLY_EVENT=false • build=33"
+            "localId=${initial.localId} • REQUEST_APPLY_EVENT=false • build=34"
         )
 
         capturePostLaunchTimeline(appContext, initial.localId)
+        captureCrashEvidence(appContext, initial.localId)
         return initial
     }
 
@@ -141,12 +140,12 @@ object StrictLocalThemeRoute {
             ?: JSONObject().put("fallback", JSONArray())
         json.put("builtInPreviews", JSONObject(thumbnails.toString()))
 
-        val localDir = context.getExternalFilesDir("strict-local-build33") ?: return false
+        val localDir = context.getExternalFilesDir("strict-local-build34") ?: return false
         localDir.mkdirs()
         val localFile = File(localDir, "$resourceCode-$localId.mrm")
         localFile.writeText(json.toString(), Charsets.UTF_8)
 
-        val tmpRemote = "$remotePath.hyperos-tdk-build33.tmp"
+        val tmpRemote = "$remotePath.hyperos-tdk-build34.tmp"
         val write = ShizukuBridge.exec(
             context,
             "set -e; cp -f ${shellQuote(localFile.absolutePath)} ${shellQuote(tmpRemote)}; " +
@@ -156,7 +155,7 @@ object StrictLocalThemeRoute {
     }
 
     private suspend fun capturePostLaunchTimeline(context: Context, localId: String) {
-        val targetsMs = listOf(100L, 300L, 700L, 1_500L, 3_000L)
+        val targetsMs = listOf(100L, 300L, 700L, 1_500L, 2_500L, 3_500L)
         var elapsed = 0L
         for (target in targetsMs) {
             delay(target - elapsed)
@@ -171,21 +170,53 @@ object StrictLocalThemeRoute {
             DiagnosticsSessionClient.append(
                 context,
                 "STRICT_LOCAL_ACTIVITY_SAMPLE",
-                "t=${target}ms • localId=$localId • ${sample?.output?.replace('\n', ' ')?.trim()?.take(1600) ?: "probe-unavailable"}"
+                "t=${target}ms • localId=$localId • ${sample?.output?.replace('\n', ' ')?.trim()?.take(1800) ?: "probe-unavailable"}"
             )
         }
+    }
 
-        val logs = runCatching {
+    private suspend fun captureCrashEvidence(context: Context, localId: String) {
+        // Give Android's crash/exit bookkeeping a short moment to settle after the 3.5 s sample.
+        delay(700L)
+
+        val crashBuffer = runCatching {
             ShizukuBridge.exec(
                 context,
-                "logcat -d -v threadtime -t 350 2>/dev/null | " +
-                    "grep -E 'AndroidRuntime|ThemeDetailActivity|com.android.thememanager|ViewLocalResource' | tail -n 120"
+                "logcat -b crash -d -v threadtime -t 220 2>/dev/null | tail -n 180"
             )
         }.getOrNull()
         DiagnosticsSessionClient.append(
             context,
-            "STRICT_LOCAL_POST_LAUNCH_LOGCAT",
-            logs?.output?.replace('\n', ' ')?.trim()?.take(7000).orEmpty().ifBlank { "no-output" }
+            "THEME_MANAGER_CRASH_BUFFER",
+            "localId=$localId • " +
+                crashBuffer?.output?.trim()?.take(14000).orEmpty().ifBlank { "no-output" }
+        )
+
+        val exitInfo = runCatching {
+            ShizukuBridge.exec(
+                context,
+                "dumpsys activity exit-info $THEME_MANAGER_PACKAGE 2>/dev/null | head -n 260"
+            )
+        }.getOrNull()
+        DiagnosticsSessionClient.append(
+            context,
+            "THEME_MANAGER_EXIT_INFO",
+            "localId=$localId • " +
+                exitInfo?.output?.trim()?.take(14000).orEmpty().ifBlank { "no-output" }
+        )
+
+        val fatalWindow = runCatching {
+            ShizukuBridge.exec(
+                context,
+                "logcat -d -v threadtime -b main -b system -b crash -t 1200 2>/dev/null | " +
+                    "grep -E 'FATAL EXCEPTION|AndroidRuntime|Process: com.android.thememanager|Caused by:|ThemeDetailActivity|ViewLocalResource|com.android.thememanager' | tail -n 260"
+            )
+        }.getOrNull()
+        DiagnosticsSessionClient.append(
+            context,
+            "THEME_MANAGER_FATAL_WINDOW",
+            "localId=$localId • " +
+                fatalWindow?.output?.trim()?.take(16000).orEmpty().ifBlank { "no-output" }
         )
     }
 
