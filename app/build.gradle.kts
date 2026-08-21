@@ -11,7 +11,7 @@ android {
         applicationId = "com.glorious.hyperostdk"
         minSdk = 26
         targetSdk = 36
-        versionCode = 26
+        versionCode = 27
         versionName = "0.4.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
