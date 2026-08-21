@@ -45,6 +45,10 @@ class HomeActivity : ComponentActivity() {
                         DiagnosticsSessionClient.append(this, "NAVIGATION", "Theme Tools açıldı")
                         startActivity(Intent(this, ModuleStatusActivity::class.java))
                     },
+                    onPrivilegedTheme = {
+                        DiagnosticsSessionClient.append(this, "NAVIGATION", "Privileged Theme Engine açıldı")
+                        startActivity(Intent(this, PrivilegedThemeActivity::class.java))
+                    },
                     onDiagnostics = {
                         DiagnosticsSessionClient.append(this, "NAVIGATION", "Live Diagnostics açıldı")
                         startActivity(Intent(this, LiveDiagnosticsActivity::class.java))
@@ -67,6 +71,7 @@ class HomeActivity : ComponentActivity() {
 @Composable
 private fun HomeScreen(
     onThemeTools: () -> Unit,
+    onPrivilegedTheme: () -> Unit,
     onDiagnostics: () -> Unit,
     onModuleSystem: () -> Unit,
     onInformation: () -> Unit
@@ -98,7 +103,7 @@ private fun HomeScreen(
             }
             item {
                 Text(
-                    "Tema araçları, tanılama, modül durumu ve uygulama bilgilerini ayrı bölümlerde yönetin. Tanılama kaydı uygulama açıldığında otomatik başlar ve sürekli aktiftir.",
+                    "Tema araçları, Shevery/Shizuku destekli privileged local engine, tanılama, modül durumu ve uygulama bilgilerini ayrı bölümlerde yönetin. Tanılama kaydı uygulama açıldığında otomatik başlar ve sürekli aktiftir.",
                     style = MaterialTheme.typography.bodyMedium
                 )
             }
@@ -111,7 +116,7 @@ private fun HomeScreen(
                         modifier = Modifier.weight(1f),
                         badge = "MTZ",
                         title = "Theme Tools",
-                        description = "MTZ import ve Theme Manager işlemleri",
+                        description = "Mevcut MTZ import ve Theme Manager işlemleri",
                         onClick = onThemeTools
                     )
                     HomeMenuCard(
@@ -122,6 +127,15 @@ private fun HomeScreen(
                         onClick = onDiagnostics
                     )
                 }
+            }
+            item {
+                HomeMenuCard(
+                    modifier = Modifier.fillMaxWidth(),
+                    badge = "0.4.1",
+                    title = "Privileged Theme Engine",
+                    description = "Shevery/Shizuku • ThemeKit-benzeri MRC/MRM staging • LocalResource Apply",
+                    onClick = onPrivilegedTheme
+                )
             }
             item {
                 Row(
