@@ -11,8 +11,8 @@ android {
         applicationId = "com.glorious.hyperostdk"
         minSdk = 26
         targetSdk = 36
-        versionCode = 23
-        versionName = "0.4.0"
+        versionCode = 24
+        versionName = "0.4.1"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -35,6 +35,7 @@ android {
     buildFeatures {
         compose = true
         buildConfig = true
+        aidl = true
     }
 }
 
@@ -53,6 +54,10 @@ dependencies {
     debugImplementation("androidx.compose.ui:ui-tooling")
 
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.11.0")
+
+    // Shevery keeps the standard Shizuku API/provider compatibility surface.
+    implementation("dev.rikka.shizuku:api:13.1.5")
+    implementation("dev.rikka.shizuku:provider:13.1.5")
 
     // Supplied by LSPosed at runtime; do not package the framework API into the APK.
     compileOnly("io.github.libxposed:api:102.0.0")
