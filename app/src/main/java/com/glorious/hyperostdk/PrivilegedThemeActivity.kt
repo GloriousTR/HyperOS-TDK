@@ -55,7 +55,7 @@ private val privilegedImportScope = CoroutineScope(SupervisorJob() + Dispatchers
 class PrivilegedThemeActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        DiagnosticsSessionClient.append(this, "NAVIGATION", "Privileged Theme Engine açıldı • build31 adaptive direct apply")
+        DiagnosticsSessionClient.append(this, "NAVIGATION", "Privileged Theme Engine açıldı • build32 adaptive direct apply")
         setContent {
             HyperOSTDKTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
@@ -117,10 +117,10 @@ private fun PrivilegedThemeScreen() {
             .padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        Text("HyperOS TDK • v${BuildConfig.VERSION_NAME} • build 31", style = MaterialTheme.typography.headlineSmall)
+        Text("HyperOS TDK • v${BuildConfig.VERSION_NAME} • build 32", style = MaterialTheme.typography.headlineSmall)
         Text("Direct Theme Apply", style = MaterialTheme.typography.titleLarge)
         Text(
-            "Build 31, Theme Manager sürümüne göre uygulanabilir doğrudan tema bileşenlerini dinamik olarak arar. Uyumlu bir direct component yoksa Local Resource yoluna geçer ve Theme Manager crash/exit tanılamasını otomatik toplar.",
+            "Build 32 önce cihazdaki Theme Manager direct-apply componentlerini dener; uygun component yoksa yerel resource fallback akışına geçer. Fallback artık Activity context ile açılır.",
             style = MaterialTheme.typography.bodyMedium
         )
 
@@ -228,7 +228,7 @@ private fun PrivilegedThemeScreen() {
 
         Spacer(Modifier.height(4.dp))
         Text(
-            "Build 31 adaptif test: önce Theme Manager içindeki direct-apply component'leri denenir. Bu ROM'da desteklenmiyorsa Local Resource fallback çalıştırılır ve crash/exit kayıtları Live Diagnostics'e eklenir. Rights/trial kontrollerine müdahale edilmez.",
+            "Build 32 adaptif test: önce Theme Manager içindeki direct-apply component'leri denenir. Bu ROM'da desteklenmiyorsa Local Resource fallback çalıştırılır ve crash/exit kayıtları Live Diagnostics'e eklenir. Rights/trial kontrollerine müdahale edilmez.",
             style = MaterialTheme.typography.bodySmall
         )
     }
@@ -253,7 +253,7 @@ private fun PrivilegedThemeScreen() {
                         DiagnosticsSessionClient.append(
                             appContext,
                             "PRIVILEGED_IMPORT_SCOPE",
-                            "processScope=true • applyMode=adaptive-direct • fallback=local-resource • build=31"
+                            "processScope=true • applyMode=adaptive-direct • fallback=local-resource • build=32"
                         )
                         privilegedImportScope.launch {
                             ThemeManagerCrashProbe.captureWindow(appContext)
@@ -261,7 +261,7 @@ private fun PrivilegedThemeScreen() {
                         privilegedImportScope.launch {
                             runCatching {
                                 DirectThemeApplyEngine.apply(
-                                    context = appContext,
+                                    context = context,
                                     displayName = selected.displayName,
                                     sourceUri = selected.uri
                                 )
@@ -269,7 +269,7 @@ private fun PrivilegedThemeScreen() {
                                 DiagnosticsSessionClient.append(
                                     appContext,
                                     "DIRECT_APPLY_COMPLETED",
-                                    "route=${result.route} • bytes=${result.snapshotBytes} • sha1=${result.sha1} • component=${result.component} • fallbackLocalId=${result.fallbackLocalId} • build=31"
+                                    "route=${result.route} • bytes=${result.snapshotBytes} • sha1=${result.sha1} • component=${result.component} • fallbackLocalId=${result.fallbackLocalId} • build=32"
                                 )
                                 status = when (result.route) {
                                     DirectThemeApplyEngine.Route.DIRECT_COMPONENT ->
