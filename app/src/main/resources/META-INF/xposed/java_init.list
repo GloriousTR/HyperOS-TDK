@@ -1,1 +1,2 @@
 com.glorious.hyperostdk.xposed.HyperOSTDKModule
+com.glorious.hyperostdk.xposed.ApplyDiagnosticsModule
