@@ -1,9 +1,12 @@
 package com.glorious.hyperostdk.xposed;
 
 import android.content.Context;
+import android.net.Uri;
 import android.os.Bundle;
 import android.util.Log;
 import android.util.Pair;
+
+import com.glorious.hyperostdk.BuildConfig;
 
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
@@ -39,6 +42,8 @@ public final class ApplyDiagnosticsInAppModule extends XposedModule {
             "com.android.thememanager.basemodule.controller.online.f";
     private static final String ONLINE_CONTROLLER =
             "com.android.thememanager.controller.online.a";
+    private static final String DOWNLOAD_RIGHTS_CONTROLLER =
+            "com.android.thememanager.basemodule.controller.online.e";
     private static final String DETAIL_CONTROLLER =
             "com.android.thememanager.detail.u";
     private static final String DETAIL_ASYNC_TASK =
@@ -50,7 +55,8 @@ public final class ApplyDiagnosticsInAppModule extends XposedModule {
 
     @Override
     public void onModuleLoaded(ModuleLoadedParam param) {
-        log(Log.INFO, TAG, "[APPLY-DIAG] module loaded; process=" + param.getProcessName()
+        log(Log.INFO, TAG, "[APPLY-DIAG] module loaded; version=" + BuildConfig.VERSION_NAME
+                + ", process=" + param.getProcessName()
                 + ", framework=" + getFrameworkName()
                 + ", api=" + getApiVersion());
     }
@@ -76,6 +82,9 @@ public final class ApplyDiagnosticsInAppModule extends XposedModule {
                 if (receiver instanceof Context) {
                     Context context = ((Context) receiver).getApplicationContext();
                     applicationContext = context != null ? context : (Context) receiver;
+                    publish("MODULE_RUNTIME",
+                            "moduleVersion=" + BuildConfig.VERSION_NAME + " | target=" + TARGET_PACKAGE,
+                            "INFO");
                     publish("MODULE_READY",
                             "Theme Manager hazır; in-app Apply Diagnostics bağlanıyor.",
                             "INFO");
@@ -103,6 +112,7 @@ public final class ApplyDiagnosticsInAppModule extends XposedModule {
         count += hookNamedMethods(classLoader, ONLINE_CONTROLLER, "b");
         count += hookNamedMethods(classLoader, ONLINE_CONTROLLER, "c");
         count += hookNamedMethods(classLoader, ONLINE_CONTROLLER, "d");
+        count += hookDownloadRightsResponse(classLoader);
         count += hookNamedMethods(classLoader, DETAIL_CONTROLLER, "c");
         count += hookNamedMethods(classLoader, DETAIL_ASYNC_TASK, "doInBackground");
 
@@ -163,6 +173,74 @@ public final class ApplyDiagnosticsInAppModule extends XposedModule {
             publish("HOOK_INSTALL_ERROR", className + "#" + methodName + " | "
                     + error.getClass().getName() + ": " + safeString(error.getMessage()), "ERROR");
             log(Log.ERROR, TAG, "[APPLY-DIAG] unable to hook " + className + "#" + methodName, error);
+            return 0;
+        }
+    }
+
+    /**
+     * Hooks the exact network helper used by online.a#a after RequestUrl is converted to String.
+     * The raw URL is never persisted: query and fragment data are intentionally stripped.
+     */
+    private int hookDownloadRightsResponse(ClassLoader classLoader) {
+        try {
+            Class<?> targetClass = Class.forName(DOWNLOAD_RIGHTS_CONTROLLER, false, classLoader);
+            int installedCount = 0;
+
+            for (Method method : targetClass.getDeclaredMethods()) {
+                if (!"s".equals(method.getName())) {
+                    continue;
+                }
+                Class<?>[] parameterTypes = method.getParameterTypes();
+                if (parameterTypes.length != 1 || parameterTypes[0] != String.class) {
+                    continue;
+                }
+                int modifiers = method.getModifiers();
+                if (Modifier.isAbstract(modifiers) || Modifier.isNative(modifiers)) {
+                    continue;
+                }
+
+                method.setAccessible(true);
+                final String signature = signatureOf(method);
+                hook(method).intercept(chain -> {
+                    long startedAt = System.nanoTime();
+                    List<Object> args = chain.getArgs();
+                    String rawRequest = args != null && !args.isEmpty() && args.get(0) != null
+                            ? String.valueOf(args.get(0)) : null;
+                    publish("DOWNLOAD_RIGHTS_ENTER",
+                            signature + " | endpoint=" + sanitizeEndpoint(rawRequest),
+                            "INFO");
+                    try {
+                        Object result = chain.proceed();
+                        long elapsedUs = (System.nanoTime() - startedAt) / 1_000L;
+                        publish("DOWNLOAD_RIGHTS_RESPONSE",
+                                signature + " | endpoint=" + sanitizeEndpoint(rawRequest)
+                                        + " | " + describeDownloadRightsResponse(result)
+                                        + " | elapsedUs=" + elapsedUs,
+                                "INFO");
+                        return result;
+                    } catch (Throwable error) {
+                        long elapsedUs = (System.nanoTime() - startedAt) / 1_000L;
+                        publish("DOWNLOAD_RIGHTS_THROW",
+                                signature + " | endpoint=" + sanitizeEndpoint(rawRequest)
+                                        + " | error=" + error.getClass().getName()
+                                        + ": " + safeString(error.getMessage())
+                                        + " | elapsedUs=" + elapsedUs,
+                                "ERROR");
+                        throw error;
+                    }
+                });
+                installedCount++;
+                publish("HOOK_INSTALLED", signature + " | privacy=redacted-url", "INFO");
+            }
+
+            if (installedCount == 0) {
+                publish("HOOK_NOT_FOUND", DOWNLOAD_RIGHTS_CONTROLLER + "#s(java.lang.String)", "WARN");
+            }
+            return installedCount;
+        } catch (Throwable error) {
+            publish("HOOK_INSTALL_ERROR", DOWNLOAD_RIGHTS_CONTROLLER + "#s | "
+                    + error.getClass().getName() + ": " + safeString(error.getMessage()), "ERROR");
+            log(Log.ERROR, TAG, "[APPLY-DIAG] unable to hook download-rights helper", error);
             return 0;
         }
     }
@@ -297,6 +375,36 @@ public final class ApplyDiagnosticsInAppModule extends XposedModule {
             count++;
         }
         return builder.append('}').toString();
+    }
+
+    private static String describeDownloadRightsResponse(Object result) {
+        if (!(result instanceof Pair<?, ?>)) {
+            return "responseType=" + (result == null ? "null" : result.getClass().getName());
+        }
+        Pair<?, ?> pair = (Pair<?, ?>) result;
+        Object code = pair.first;
+        Object payload = pair.second;
+        return "resultCode=" + safeString(String.valueOf(code))
+                + " | payloadType=" + (payload == null ? "null" : payload.getClass().getName())
+                + " | payloadPresent=" + (payload != null);
+    }
+
+    private static String sanitizeEndpoint(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return "<empty>";
+        }
+        try {
+            Uri uri = Uri.parse(raw);
+            String scheme = uri.getScheme();
+            String host = uri.getHost();
+            if (scheme != null && host != null) {
+                String path = uri.getPath();
+                return scheme + "://" + host + (path == null ? "" : path);
+            }
+        } catch (Throwable ignored) {
+            // Fall through to a conservative non-URL representation.
+        }
+        return "<redacted-non-url length=" + raw.length() + ">";
     }
 
     private static String describeSimpleFields(Object value, boolean includeAllNames) {
