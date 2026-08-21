@@ -280,7 +280,7 @@ private fun LiveDiagnosticsScreen(
                 .orEmpty()
                 .lineSequence()
                 .filter { it.isNotBlank() }
-                .takeLastLines(160)
+                .takeLastLines(180)
 
             if (visibleLines.isEmpty()) {
                 item {
@@ -316,6 +316,8 @@ private fun evaluateHookRuntime(text: String): HookRuntimeStatus {
     }
 
     val hasThemeManagerEvents = text.contains("ThemeManager.ApplyDiagnostics")
+    val expectedRuntimeMarker = "MODULE_RUNTIME | moduleVersion=${BuildConfig.VERSION_NAME}"
+    val hasExactRuntimeVersion = text.contains(expectedRuntimeMarker)
     val hasRightsPairHook =
         text.contains("HOOK_INSTALLED | com.android.thememanager.controller.online.a#b(") ||
             text.contains("RIGHTS_PAIR")
@@ -325,15 +327,23 @@ private fun evaluateHookRuntime(text: String): HookRuntimeStatus {
     val hasDrmHook =
         text.contains("HOOK_INSTALLED | com.android.thememanager.controller.online.a#d(") ||
             text.contains("DRM_RESULT")
+    val hasDownloadRightsHook =
+        text.contains("HOOK_INSTALLED | com.android.thememanager.basemodule.controller.online.e#s(java.lang.String)") ||
+            text.contains("DOWNLOAD_RIGHTS_RESPONSE")
 
     return when {
-        hasRightsPairHook && hasRightsMapHook && hasDrmHook -> HookRuntimeStatus(
-            HookRuntimeStatus.State.READY,
-            "Güncel rights/DRM hook seti aktif. RIGHTS_PAIR, RIGHTS_MAP ve DRM_RESULT izlenebilir."
-        )
-        hasThemeManagerEvents -> HookRuntimeStatus(
+        hasExactRuntimeVersion && hasRightsPairHook && hasRightsMapHook && hasDrmHook && hasDownloadRightsHook ->
+            HookRuntimeStatus(
+                HookRuntimeStatus.State.READY,
+                "Enjekte edilen modül v${BuildConfig.VERSION_NAME} ile eşleşiyor. DRM ve download-rights hook seti aktif."
+            )
+        hasThemeManagerEvents && !hasExactRuntimeVersion -> HookRuntimeStatus(
             HookRuntimeStatus.State.STALE,
-            "Theme Manager çalışıyor fakat güncel rights/DRM hook seti yüklenmemiş. Hedef süreç eski LSPosed modül kodunu bellekte tutuyor."
+            "Theme Manager çalışıyor ancak enjekte edilen modül sürümü v${BuildConfig.VERSION_NAME} ile eşleşmiyor. Hedef süreç yeniden başlatılmalı."
+        )
+        hasExactRuntimeVersion -> HookRuntimeStatus(
+            HookRuntimeStatus.State.STALE,
+            "Doğru modül sürümü enjekte edildi ancak beklenen download-rights hook seti eksik. Theme Manager'ı yeniden başlatıp tekrar kontrol edin."
         )
         else -> HookRuntimeStatus(
             HookRuntimeStatus.State.WAITING,
