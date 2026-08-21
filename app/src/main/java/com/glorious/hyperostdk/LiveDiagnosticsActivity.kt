@@ -2,6 +2,7 @@ package com.glorious.hyperostdk
 
 import android.content.Intent
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.Arrangement
@@ -64,17 +65,40 @@ class LiveDiagnosticsActivity : ComponentActivity() {
     }
 
     private fun shareDiagnostics(file: File) {
-        val uri = FileProvider.getUriForFile(
-            this,
-            "${BuildConfig.APPLICATION_ID}.fileprovider",
-            file
-        )
-        val intent = Intent(Intent.ACTION_SEND).apply {
-            type = "text/plain"
-            putExtra(Intent.EXTRA_STREAM, uri)
-            addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        runCatching {
+            val uri = FileProvider.getUriForFile(
+                this,
+                "${BuildConfig.APPLICATION_ID}.fileprovider",
+                file
+            )
+            val intent = Intent(Intent.ACTION_SEND).apply {
+                type = "text/plain"
+                putExtra(Intent.EXTRA_STREAM, uri)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            startActivity(Intent.createChooser(intent, "Canlı tanılama raporunu paylaş"))
+            runCatching {
+                DiagnosticsSessionClient.append(
+                    this,
+                    event = "LIVE_DIAGNOSTICS_SHARED",
+                    detail = "Rapor paylaşım ekranı açıldı: ${file.name}"
+                )
+            }
+        }.onFailure { error ->
+            runCatching {
+                DiagnosticsSessionClient.append(
+                    this,
+                    event = "LIVE_DIAGNOSTICS_SHARE_FAILED",
+                    detail = "${error.javaClass.simpleName}: ${error.message}",
+                    level = "ERROR"
+                )
+            }
+            Toast.makeText(
+                this,
+                "Rapor paylaşılamadı: ${error.message ?: error.javaClass.simpleName}",
+                Toast.LENGTH_LONG
+            ).show()
         }
-        startActivity(Intent.createChooser(intent, "Canlı tanılama raporunu paylaş"))
     }
 }
 
