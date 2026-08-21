@@ -3,6 +3,7 @@ package com.glorious.hyperostdk.data
 import android.content.Context
 import android.os.Environment
 import com.glorious.hyperostdk.BuildConfig
+import com.glorious.hyperostdk.DiagnosticsSessionClient
 import com.glorious.hyperostdk.model.DeviceInfo
 import com.glorious.hyperostdk.model.FrameworkArtifactExportResult
 import com.glorious.hyperostdk.model.IntentProbeResult
@@ -32,6 +33,9 @@ object DiagnosticsLogger {
         val directory = File(root, "diagnostics").apply { mkdirs() }
         val now = LocalDateTime.now()
         val file = File(directory, "hyperos-tdk-${now.format(fileTimestamp)}.txt")
+        val liveDiagnostics = runCatching {
+            DiagnosticsSessionClient.snapshot(context) ?: DiagnosticsSessionClient.ensureStarted(context)
+        }.getOrNull()
 
         file.writeText(
             buildReport(
@@ -42,7 +46,8 @@ object DiagnosticsLogger {
                 intentProbeResults = intentProbeResults,
                 themeServiceProbeResult = themeServiceProbeResult,
                 themeInterfaceReflectionResult = themeInterfaceReflectionResult,
-                frameworkArtifactExportResult = frameworkArtifactExportResult
+                frameworkArtifactExportResult = frameworkArtifactExportResult,
+                liveDiagnostics = liveDiagnostics
             )
         )
         return file
@@ -56,7 +61,8 @@ object DiagnosticsLogger {
         intentProbeResults: List<IntentProbeResult>,
         themeServiceProbeResult: ThemeServiceProbeResult?,
         themeInterfaceReflectionResult: ThemeInterfaceReflectionResult?,
-        frameworkArtifactExportResult: FrameworkArtifactExportResult?
+        frameworkArtifactExportResult: FrameworkArtifactExportResult?,
+        liveDiagnostics: DiagnosticsSessionClient.Snapshot?
     ): String = buildString {
         appendLine("HyperOS TDK Diagnostics")
         appendLine("======================")
@@ -175,6 +181,23 @@ object DiagnosticsLogger {
                     "- artifact: ${artifact.path} | exists=${artifact.exists} | readable=${artifact.readable} | size=${artifact.sizeBytes ?: -1} | interface=${artifact.containsInterface ?: "unknown"} | stub=${artifact.containsStub ?: "unknown"} | sha256=${artifact.sha256 ?: "n/a"}"
                 )
                 artifact.scanError?.let { appendLine("  scan error: $it") }
+            }
+        }
+        appendLine()
+
+        appendLine("[LIVE DIAGNOSTICS - ALWAYS ON]")
+        if (liveDiagnostics == null) {
+            appendLine("Live diagnostics session unavailable.")
+        } else {
+            appendLine("Session ID: ${liveDiagnostics.sessionId}")
+            appendLine("Started at (epoch ms): ${liveDiagnostics.startedAt}")
+            appendLine("Events: ${liveDiagnostics.eventCount}")
+            appendLine("------------------------------------------------------------")
+            if (liveDiagnostics.text.isBlank()) {
+                appendLine("No live events captured yet.")
+            } else {
+                append(liveDiagnostics.text)
+                if (!liveDiagnostics.text.endsWith('\n')) appendLine()
             }
         }
     }
