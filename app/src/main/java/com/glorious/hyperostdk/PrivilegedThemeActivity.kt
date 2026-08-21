@@ -39,9 +39,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.unit.dp
-import com.glorious.hyperostdk.privileged.HyperThemeCompatEngine
+import com.glorious.hyperostdk.privileged.DirectThemeApplyEngine
 import com.glorious.hyperostdk.privileged.PrivilegedThemeEngine
 import com.glorious.hyperostdk.privileged.ShizukuBridge
+import com.glorious.hyperostdk.privileged.ThemeManagerCrashProbe
 import com.glorious.hyperostdk.ui.theme.HyperOSTDKTheme
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -54,7 +55,7 @@ private val privilegedImportScope = CoroutineScope(SupervisorJob() + Dispatchers
 class PrivilegedThemeActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        DiagnosticsSessionClient.append(this, "NAVIGATION", "Privileged Theme Engine açıldı • build30 HyperTheme reference mode")
+        DiagnosticsSessionClient.append(this, "NAVIGATION", "Privileged Theme Engine açıldı • build31 adaptive direct apply")
         setContent {
             HyperOSTDKTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
@@ -116,10 +117,10 @@ private fun PrivilegedThemeScreen() {
             .padding(20.dp),
         verticalArrangement = Arrangement.spacedBy(14.dp)
     ) {
-        Text("HyperOS TDK • v${BuildConfig.VERSION_NAME} • build 30", style = MaterialTheme.typography.headlineSmall)
-        Text("HyperTheme Direct Apply Test", style = MaterialTheme.typography.titleLarge)
+        Text("HyperOS TDK • v${BuildConfig.VERSION_NAME} • build 31", style = MaterialTheme.typography.headlineSmall)
+        Text("Direct Theme Apply", style = MaterialTheme.typography.titleLarge)
         Text(
-            "Build 30, HyperTheme 1.1.17 (38) içindeki Global-ROM direct apply yolunu izole eder: seçili MTZ snapshot.mtz olarak Theme Manager alanına kopyalanır ve ApplyThemeForScreenshot doğrudan çağrılır. ThemeDetailActivity kullanılmaz.",
+            "Build 31, Theme Manager sürümüne göre uygulanabilir doğrudan tema bileşenlerini dinamik olarak arar. Uyumlu bir direct component yoksa Local Resource yoluna geçer ve Theme Manager crash/exit tanılamasını otomatik toplar.",
             style = MaterialTheme.typography.bodyMedium
         )
 
@@ -161,7 +162,7 @@ private fun PrivilegedThemeScreen() {
             onClick = {
                 scope.launch {
                     busy = true
-                    status = "Theme Manager .data capability testi çalışıyor…"
+                    status = "Theme Manager capability testi çalışıyor…"
                     runCatching { PrivilegedThemeEngine.probe(context) }
                         .onSuccess { report ->
                             capability = report
@@ -184,7 +185,7 @@ private fun PrivilegedThemeScreen() {
                     verticalArrangement = Arrangement.spacedBy(5.dp)
                 ) {
                     Text(
-                        if (report.ready) "Direct Apply: HAZIR" else "Direct Apply: HAZIR DEĞİL",
+                        if (report.ready) "Theme Apply: HAZIR" else "Theme Apply: HAZIR DEĞİL",
                         style = MaterialTheme.typography.titleMedium
                     )
                     Text(report.detail, style = MaterialTheme.typography.bodySmall)
@@ -218,7 +219,7 @@ private fun PrivilegedThemeScreen() {
             enabled = !busy && selectedMtz != null && capability?.ready == true,
             onClick = { showApplyConfirmation = true }
         ) {
-            Text(if (busy) "İşlem sürüyor…" else "4. HyperTheme Direct Apply")
+            Text(if (busy) "İşlem sürüyor…" else "4. Direct Theme Apply")
         }
 
         Card(modifier = Modifier.fillMaxWidth()) {
@@ -227,7 +228,7 @@ private fun PrivilegedThemeScreen() {
 
         Spacer(Modifier.height(4.dp))
         Text(
-            "Build 30 izolasyon testi: ThemeKit LocalResource/ThemeDetailActivity açılmaz. HyperTheme'den çıkarılan snapshot + ApplyThemeForScreenshot yolu tek başına denenir. Rights/trial kontrollerine müdahale edilmez.",
+            "Build 31 adaptif test: önce Theme Manager içindeki direct-apply component'leri denenir. Bu ROM'da desteklenmiyorsa Local Resource fallback çalıştırılır ve crash/exit kayıtları Live Diagnostics'e eklenir. Rights/trial kontrollerine müdahale edilmez.",
             style = MaterialTheme.typography.bodySmall
         )
     }
@@ -235,10 +236,10 @@ private fun PrivilegedThemeScreen() {
     if (showApplyConfirmation) {
         AlertDialog(
             onDismissRequest = { showApplyConfirmation = false },
-            title = { Text("HyperTheme Direct Apply") },
+            title = { Text("Direct Theme Apply") },
             text = {
                 Text(
-                    "Seçili MTZ, Shevery/Shizuku üzerinden Theme Manager'ın snapshot/snapshot.mtz dosyasına kopyalanacak. Ardından Xiaomi'nin ApplyThemeForScreenshot Activity'si HyperTheme 1.1.17 ile aynı extra değerleri kullanılarak çağrılacak. Devam edilsin mi?"
+                    "Seçili MTZ Theme Manager snapshot alanına hazırlanacak. HyperOS TDK, cihazdaki Theme Manager sürümünde kullanılabilen direct-apply activity'lerini dinamik olarak deneyecek; direct yol desteklenmiyorsa Local Resource fallback'e geçecek. Devam edilsin mi?"
                 )
             },
             confirmButton = {
@@ -248,15 +249,18 @@ private fun PrivilegedThemeScreen() {
                         val selected = selectedMtz ?: return@TextButton
                         val appContext = context.applicationContext
                         busy = true
-                        status = "HyperTheme reference apply hazırlanıyor…"
+                        status = "Direct Theme Apply hazırlanıyor…"
                         DiagnosticsSessionClient.append(
                             appContext,
                             "PRIVILEGED_IMPORT_SCOPE",
-                            "processScope=true • applyMode=hypertheme-direct • build=30"
+                            "processScope=true • applyMode=adaptive-direct • fallback=local-resource • build=31"
                         )
                         privilegedImportScope.launch {
+                            ThemeManagerCrashProbe.captureWindow(appContext)
+                        }
+                        privilegedImportScope.launch {
                             runCatching {
-                                HyperThemeCompatEngine.apply(
+                                DirectThemeApplyEngine.apply(
                                     context = appContext,
                                     displayName = selected.displayName,
                                     sourceUri = selected.uri
@@ -264,24 +268,29 @@ private fun PrivilegedThemeScreen() {
                             }.onSuccess { result ->
                                 DiagnosticsSessionClient.append(
                                     appContext,
-                                    "HYPERTHEME_REFERENCE_APPLY_COMPLETED",
-                                    "bytes=${result.snapshotBytes} • sha1=${result.sha1} • build=30"
+                                    "DIRECT_APPLY_COMPLETED",
+                                    "route=${result.route} • bytes=${result.snapshotBytes} • sha1=${result.sha1} • component=${result.component} • fallbackLocalId=${result.fallbackLocalId} • build=31"
                                 )
-                                status = "HyperTheme Direct Apply çağrısı gönderildi. snapshot=${result.snapshotBytes} bayt. Tema uygulanmışsa sonucu kontrol edin; uygulanmadıysa Live Diagnostics'i paylaşın."
+                                status = when (result.route) {
+                                    DirectThemeApplyEngine.Route.DIRECT_COMPONENT ->
+                                        "Direct Apply çağrısı gönderildi: ${result.component}. Tema sonucunu kontrol edin."
+                                    DirectThemeApplyEngine.Route.LOCAL_RESOURCE_FALLBACK ->
+                                        "Direct component bu ROM'da bulunamadı; Local Resource fallback açıldı. localId=${result.fallbackLocalId}. Live Diagnostics kaydını paylaşın."
+                                }
                             }.onFailure { error ->
                                 DiagnosticsSessionClient.append(
                                     appContext,
-                                    "HYPERTHEME_REFERENCE_APPLY_FAILED",
+                                    "DIRECT_APPLY_FAILED",
                                     "${error.javaClass.simpleName}: ${error.message}",
                                     level = "ERROR"
                                 )
-                                status = "HyperTheme Direct Apply başarısız: ${error.javaClass.simpleName}: ${error.message}. Live Diagnostics kaydını paylaşın."
+                                status = "Direct Theme Apply başarısız: ${error.javaClass.simpleName}: ${error.message}. Live Diagnostics kaydını paylaşın."
                             }
                             busy = false
                         }
                     }
                 ) {
-                    Text("Snapshot'a Yaz ve Uygula")
+                    Text("Hazırla ve Uygula")
                 }
             },
             dismissButton = {
