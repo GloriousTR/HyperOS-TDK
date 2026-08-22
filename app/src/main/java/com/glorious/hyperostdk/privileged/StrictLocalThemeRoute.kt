@@ -11,15 +11,13 @@ import org.json.JSONObject
 import java.io.File
 
 /**
- * Build 35 strict local-resource route.
+ * Build 37 strict local-resource route.
  *
- * The build-34 crash proved Theme Manager is failing while its local-theme adapter parses the
- * staged resource tree (Expected BEGIN_OBJECT but was BEGIN_ARRAY). Build 35 removes the
- * build-33/34 race where metadata was rewritten while Theme Manager was already alive:
- * 1) create/install the resource tree,
- * 2) stop Theme Manager before any rewrite,
- * 3) rewrite every owned MRM to the strict reference schema,
- * 4) launch the local resource once and never mutate it afterwards.
+ * Build 36's JsonReader tracer identified the exact Theme Manager parser failure:
+ * builtInThumbnails was encountered as BEGIN_ARRAY where the local adapter requires
+ * BEGIN_OBJECT. Build 37 normalizes builtInThumbnails/builtInPreviews for every MRM owned
+ * by the current import, verifies the complete owned resource tree before launch, and emits
+ * a read-only global scan for any other malformed MRM left in Theme Manager storage.
  */
 object StrictLocalThemeRoute {
     suspend fun installAndOpen(
@@ -31,13 +29,9 @@ object StrictLocalThemeRoute {
         DiagnosticsSessionClient.append(
             appContext,
             "STRICT_LOCAL_ROUTE_STARTED",
-            "displayName=$displayName • build=35 • strategy=stop-patch-single-final-launch"
+            "displayName=$displayName • build=37 • strategy=normalize-thumbnail-containers-before-final-launch"
         )
 
-        // Re-use the proven staging/install path. It opens Theme Manager once internally; we
-        // immediately stop that process before touching metadata, well before the ~3 s crash
-        // window observed on build 33/34. The final launch below is the only launch that sees
-        // the strict metadata tree.
         val initial = ThemeKitCompatInstaller.installAndOpen(
             context = context,
             displayName = displayName,
@@ -64,11 +58,34 @@ object StrictLocalThemeRoute {
             level = if (patch.success) "INFO" else "WARN"
         )
 
-        val audit = auditMetadataTypes(appContext, initial.localId)
+        val mainAudit = auditMetadataTypes(appContext, initial.localId)
         DiagnosticsSessionClient.append(
             appContext,
             "STRICT_METADATA_TYPE_AUDIT",
-            "localId=${initial.localId} • $audit"
+            "localId=${initial.localId} • $mainAudit"
+        )
+
+        val ownedAudit = auditOwnedTreeTypes(appContext, initial.localId)
+        DiagnosticsSessionClient.append(
+            appContext,
+            if (ownedAudit.invalidCount == 0) "STRICT_OWNED_TREE_TYPE_AUDIT_SUCCESS" else "STRICT_OWNED_TREE_TYPE_AUDIT_FAILED",
+            "localId=${initial.localId} • checked=${ownedAudit.checkedCount} • invalid=${ownedAudit.invalidCount} • ${ownedAudit.detail}",
+            level = if (ownedAudit.invalidCount == 0) "INFO" else "ERROR"
+        )
+        check(ownedAudit.invalidCount == 0) {
+            "Owned metadata tree still contains non-object builtInThumbnails/builtInPreviews: ${ownedAudit.detail}"
+        }
+
+        val globalScan = scanGlobalMalformedThumbnailContainers(appContext)
+        DiagnosticsSessionClient.append(
+            appContext,
+            if (globalScan.isBlank()) "STRICT_GLOBAL_SCHEMA_SCAN_CLEAN" else "STRICT_GLOBAL_SCHEMA_SCAN_WARNING",
+            if (globalScan.isBlank()) {
+                "No builtInThumbnails/builtInPreviews top-level ARRAY signatures found under Theme Manager meta storage."
+            } else {
+                "Other malformed metadata candidates exist outside/alongside the current tree • paths=${globalScan.take(7000)}"
+            },
+            level = if (globalScan.isBlank()) "INFO" else "WARN"
         )
 
         val intent = Intent(
@@ -86,7 +103,7 @@ object StrictLocalThemeRoute {
         DiagnosticsSessionClient.append(
             appContext,
             "STRICT_LOCAL_RESOURCE_RELAUNCHED",
-            "localId=${initial.localId} • REQUEST_APPLY_EVENT=false • build=35 • metadataFrozen=true"
+            "localId=${initial.localId} • REQUEST_APPLY_EVENT=false • build=37 • metadataFrozen=true • thumbnailContainers=OBJECT"
         )
 
         capturePostLaunchTimeline(appContext, initial.localId)
@@ -98,6 +115,12 @@ object StrictLocalThemeRoute {
         val success: Boolean,
         val patchedCount: Int,
         val subResourceCount: Int,
+        val detail: String
+    )
+
+    private data class TreeAuditResult(
+        val checkedCount: Int,
+        val invalidCount: Int,
         val detail: String
     )
 
@@ -143,7 +166,7 @@ object StrictLocalThemeRoute {
             success = patched == refs.length() + 1,
             patchedCount = patched,
             subResourceCount = refs.length(),
-            detail = "mainVerify=${verify.output.replace('\n', ' ').trim().take(500)} • mainAdapter=null • subAdapter=4.0 • metadataFrozenBeforeLaunch=true"
+            detail = "mainVerify=${verify.output.replace('\n', ' ').trim().take(500)} • mainAdapter=null • subAdapter=4.0 • builtInThumbnailContainersNormalized=true • metadataFrozenBeforeLaunch=true"
         )
     }
 
@@ -167,41 +190,50 @@ object StrictLocalThemeRoute {
         json.put("isBackUpVersion", false)
         json.put("themeType", 0)
 
+        // Build 36 proved Theme Manager calls beginObject() for these two fields. Normalize
+        // them unconditionally so an old ARRAY representation cannot survive in any owned MRM.
+        val normalizedThumbnails = normalizeLocalizedArrayContainer(json.opt("builtInThumbnails"))
+        val normalizedPreviews = normalizeLocalizedArrayContainer(json.opt("builtInPreviews"))
+        json.put("builtInThumbnails", normalizedThumbnails)
+        json.put("builtInPreviews", normalizedPreviews)
+
         if (isMain) {
-            // The reference main-theme object leaves adapter null. Sub-resources carry 4.0.
             json.put("miuiAdapterVersion", JSONObject.NULL)
-            val thumbnails = json.optJSONObject("builtInThumbnails")
-                ?: JSONObject().put("fallback", JSONArray())
-            json.put("builtInPreviews", JSONObject(thumbnails.toString()))
         } else {
             json.put("miuiAdapterVersion", "4.0")
             json.put("wallpaperStyle", 0)
             json.put("isSingleResource", false)
 
-            // Sub-resource previews are the "small" subset of the resource thumbnails.
-            val thumbObject = json.optJSONObject("builtInThumbnails")
-                ?: JSONObject().put("fallback", JSONArray())
-            val source = thumbObject.optJSONArray("fallback") ?: JSONArray()
+            val source = normalizedThumbnails.optJSONArray("fallback") ?: JSONArray()
             val small = JSONArray()
             for (i in 0 until source.length()) {
                 val name = source.optString(i)
                 if (name.contains("small", ignoreCase = true)) small.put(name)
             }
+            // Keep the required OBJECT container even when the resulting small list is empty.
             json.put("builtInPreviews", JSONObject().put("fallback", small))
         }
 
-        val localDir = context.getExternalFilesDir("strict-local-build35") ?: return false
+        val localDir = context.getExternalFilesDir("strict-local-build37") ?: return false
         localDir.mkdirs()
         val localFile = File(localDir, "$resourceCode-$localId.mrm")
         localFile.writeText(json.toString(), Charsets.UTF_8)
 
-        val tmpRemote = "$remotePath.hyperos-tdk-build35.tmp"
+        val tmpRemote = "$remotePath.hyperos-tdk-build37.tmp"
         val write = ShizukuBridge.exec(
             context,
             "set -e; cp -f ${shellQuote(localFile.absolutePath)} ${shellQuote(tmpRemote)}; " +
                 "mv -f ${shellQuote(tmpRemote)} ${shellQuote(remotePath)}; test -s ${shellQuote(remotePath)}"
         )
         return write.success
+    }
+
+    private fun normalizeLocalizedArrayContainer(value: Any?): JSONObject {
+        return when (value) {
+            is JSONObject -> JSONObject(value.toString())
+            is JSONArray -> JSONObject().put("fallback", JSONArray(value.toString()))
+            else -> JSONObject().put("fallback", JSONArray())
+        }
     }
 
     private suspend fun auditMetadataTypes(context: Context, mainLocalId: String): String {
@@ -214,6 +246,66 @@ object StrictLocalThemeRoute {
             "parentResources", "subResources", "extraMeta", "contentPath", "miuiAdapterVersion"
         )
         return fields.joinToString(" • ") { key -> "$key=${jsonType(json.opt(key))}" }
+    }
+
+    private suspend fun auditOwnedTreeTypes(context: Context, mainLocalId: String): TreeAuditResult {
+        val mainRemote = "$REMOTE_DATA_ROOT/meta/theme/$mainLocalId.mrm"
+        val mainRead = ShizukuBridge.exec(context, "cat ${shellQuote(mainRemote)}")
+        val main = runCatching { JSONObject(mainRead.output.trim()) }.getOrNull()
+            ?: return TreeAuditResult(0, 1, "main-json-unavailable")
+
+        val targets = ArrayList<Pair<String, String>>()
+        targets += "theme" to mainRemote
+        val refs = main.optJSONArray("subResources") ?: JSONArray()
+        for (index in 0 until refs.length()) {
+            val ref = refs.optJSONObject(index) ?: continue
+            val localId = ref.optString("localId")
+            val resourceCode = ref.optString("resourceCode")
+            if (!SAFE_LOCAL_ID.matches(localId) || !SAFE_RESOURCE_CODE.matches(resourceCode)) continue
+            targets += resourceCode to "$REMOTE_DATA_ROOT/meta/$resourceCode/$localId.mrm"
+        }
+
+        var invalid = 0
+        val details = ArrayList<String>()
+        for ((resourceCode, remote) in targets) {
+            val read = ShizukuBridge.exec(context, "cat ${shellQuote(remote)}")
+            val json = runCatching { JSONObject(read.output.trim()) }.getOrNull()
+            if (json == null) {
+                invalid++
+                details += "$resourceCode=json-unavailable"
+                continue
+            }
+            val thumbnailsType = jsonType(json.opt("builtInThumbnails"))
+            val previewsType = jsonType(json.opt("builtInPreviews"))
+            if (thumbnailsType != "OBJECT" || previewsType != "OBJECT") {
+                invalid++
+                details += "$resourceCode(thumbnails=$thumbnailsType,previews=$previewsType)"
+            }
+        }
+
+        return TreeAuditResult(
+            checkedCount = targets.size,
+            invalidCount = invalid,
+            detail = details.joinToString(" • ").ifBlank { "all-owned-MRM-thumbnail-containers=OBJECT" }
+        )
+    }
+
+    private suspend fun scanGlobalMalformedThumbnailContainers(context: Context): String {
+        val scan = runCatching {
+            ShizukuBridge.exec(
+                context,
+                "grep -REIl '\"builtIn(Thumbnails|Previews)\"[[:space:]]*:[[:space:]]*\\[' " +
+                    "${shellQuote("$REMOTE_DATA_ROOT/meta")} 2>/dev/null | head -n 60"
+            )
+        }.getOrNull() ?: return "scan-unavailable"
+
+        if (!scan.success) return "scan-exit=${scan.exitCode}:${scan.output.replace('\n', ' ').take(1000)}"
+        return scan.output
+            .lineSequence()
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .map { it.removePrefix("$REMOTE_DATA_ROOT/meta/") }
+            .joinToString(" • ")
     }
 
     private fun jsonType(value: Any?): String = when (value) {
@@ -278,7 +370,7 @@ object StrictLocalThemeRoute {
             ShizukuBridge.exec(
                 context,
                 "logcat -d -v threadtime -b main -b system -b crash -t 1400 2>/dev/null | " +
-                    "grep -E 'FATAL EXCEPTION|AndroidRuntime|Process: com.android.thememanager|Caused by:|Expected BEGIN_|mine.local.adapter|ThemeDetailActivity|ViewLocalResource|com.android.thememanager' | tail -n 320"
+                    "grep -E 'FATAL EXCEPTION|AndroidRuntime|Process: com.android.thememanager|Caused by:|Expected BEGIN_|builtInThumbnails|builtInPreviews|ThemeDetailActivity|ViewLocalResource|com.android.thememanager' | tail -n 360"
             )
         }.getOrNull()
         DiagnosticsSessionClient.append(
