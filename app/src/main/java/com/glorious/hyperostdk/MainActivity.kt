@@ -105,7 +105,7 @@ private fun DiagnosticsScreen(
     var frameworkArtifactExportResult by remember { mutableStateOf<FrameworkArtifactExportResult?>(null) }
     var isBusy by remember { mutableStateOf(false) }
     var status by remember {
-        mutableStateOf("v0.1.4 hazır. IThemeService sınıfını taşıyan MIUI framework artifact'ini bulup dışa aktarabilirsiniz.")
+        mutableStateOf("v${BuildConfig.VERSION_NAME} Diagnostics hazır. IThemeService sınıfını taşıyan MIUI framework artifact'ini bulup dışa aktarabilirsiniz.")
     }
 
     val mtzPicker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri: Uri? ->
@@ -129,7 +129,7 @@ private fun DiagnosticsScreen(
         }
     }
 
-    Scaffold(topBar = { TopAppBar(title = { Text("HyperOS TDK • v0.1.4") }) }) { innerPadding ->
+    Scaffold(topBar = { TopAppBar(title = { Text("Diagnostics • v${BuildConfig.VERSION_NAME}") }) }) { innerPadding ->
         LazyColumn(
             modifier = Modifier.fillMaxSize().padding(innerPadding),
             contentPadding = PaddingValues(16.dp),
